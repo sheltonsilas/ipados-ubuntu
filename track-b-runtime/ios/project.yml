@@ -1,0 +1,79 @@
+# Source of truth for the iOS app project. CI runs `xcodegen generate --spec ios/project.yml`;
+# the generated .xcodeproj is git-ignored on purpose (decision 0005).
+name: UbuntuPad
+
+options:
+  bundleIdPrefix: dev.sheltonsilas
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+  generateEmptyDirectories: false
+  xcodeVersion: "16.0"
+
+packages:
+  UbuntuPadCore:
+    # Paths in this spec are relative to this file (track-b-runtime/ios/).
+    path: ../core
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+    CLANG_ENABLE_MODULES: YES
+
+targets:
+  UbuntuPad:
+    type: application
+    platform: iOS
+    scheme:
+      testTargets: []
+      gatherCoverageData: false
+    sources:
+      - path: UbuntuPad
+    dependencies:
+      - package: UbuntuPadCore
+        product: UbuntuPadCore
+    entitlements:
+      path: UbuntuPad/UbuntuPad.entitlements
+      properties:
+        # The app must be debuggable so a JIT enabler can attach to it (see
+        # docs/RESEARCH/jit-and-entitlements-on-ios.md). Whether these survive depends on the
+        # sideloading tool; docs/SETUP.md keeps that table.
+        get-task-allow: true
+        com.apple.security.cs.allow-jit: true
+        com.apple.security.cs.allow-unsigned-executable-memory: true
+    info:
+      path: UbuntuPad/Info.plist
+      properties:
+        CFBundleDisplayName: UbuntuPad
+        CFBundleName: UbuntuPad
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        CFBundleIconFiles: []
+        LSRequiresIPhoneOS: true
+        UIRequiresFullScreen: true
+        UILaunchScreen: {}
+        UIUserInterfaceStyle: Dark
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UIRequiredDeviceCapabilities:
+          - arm64
+    settings:
+      base:
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        TARGETED_DEVICE_FAMILY: "2"  # iPad only
+        IPHONEOS_DEPLOYMENT_TARGET: "16.0"
+        # Unsigned build: CI passes these too, but keeping them here makes a local build behave
+        # the same way and documents the intent.
+        CODE_SIGNING_ALLOWED: NO
+        CODE_SIGNING_REQUIRED: NO
+        CODE_SIGN_IDENTITY: ""
+        ENABLE_BITCODE: NO
+        ONLY_ACTIVE_ARCH: NO
+        ARCHS: arm64
+        SWIFT_TREAT_WARNINGS_AS_ERRORS: NO

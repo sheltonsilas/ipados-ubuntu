@@ -1,0 +1,68 @@
+name: tests
+
+# Runs the platform-independent part of Track B on a fast, free Linux runner, and checks that the
+# repository is still laid out and documented the way AGENTS.md promises.
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  core:
+    name: Core unit tests (ubuntu-latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Swift toolchain
+        run: |
+          set -euo pipefail
+          if ! command -v swift >/dev/null 2>&1; then
+            echo "swift is not installed on this runner image" >&2
+            exit 1
+          fi
+          swift --version
+
+      - name: Build core
+        working-directory: track-b-runtime/core
+        run: swift build
+
+      - name: Unit tests
+        working-directory: track-b-runtime/core
+        run: swift test
+
+      - name: Cross-compile a real arm64 Ubuntu binary for the loader test
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gcc-aarch64-linux-gnu
+          mkdir -p build
+          aarch64-linux-gnu-gcc -static -O0 -o build/hello-arm64 track-b-runtime/testdata/hello.c
+          file build/hello-arm64
+          ls -l build/hello-arm64
+
+      - name: Loader parses a real static arm64 ELF
+        working-directory: track-b-runtime/core
+        env:
+          UBUNTUPAD_TEST_BINARY: ${{ github.workspace }}/build/hello-arm64
+        run: swift test --filter ELFTests
+
+  layout:
+    name: Repository layout and hygiene (ubuntu-latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check layout, portability and secrets
+        run: bash tools/check-layout.sh

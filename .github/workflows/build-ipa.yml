@@ -1,0 +1,140 @@
+name: build-ipa
+
+# Builds the iOS app on a GitHub-hosted macOS runner with code signing disabled, packages the
+# result into an unsigned .ipa by hand, verifies its structure, uploads it as an artifact and
+# publishes it to a rolling `nightly` release (plus a tagged release for `v*` tags).
+#
+# No Apple account, certificate or secret is involved (decision 0003).
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-ipa-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ipa:
+    name: Unsigned IPA (macos-15)
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain versions
+        run: |
+          set -euo pipefail
+          sw_vers
+          xcodebuild -version
+          echo "xcode-select: $(xcode-select -p)"
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        working-directory: track-b-runtime
+        run: |
+          set -euo pipefail
+          xcodegen generate --spec ios/project.yml
+          xcodebuild -list -project ios/UbuntuPad.xcodeproj
+
+      - name: Build unsigned app
+        working-directory: track-b-runtime
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project ios/UbuntuPad.xcodeproj \
+            -scheme UbuntuPad \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            ARCHS=arm64 \
+            ONLY_ACTIVE_ARCH=NO \
+            build
+
+      - name: Package unsigned IPA
+        working-directory: track-b-runtime
+        run: |
+          set -euo pipefail
+          APP="build/Build/Products/Release-iphoneos/UbuntuPad.app"
+          if [ ! -d "$APP" ]; then
+            echo "app bundle not found at $APP; products were:"
+            find build/Build/Products -maxdepth 3 || true
+            exit 1
+          fi
+          rm -rf dist
+          mkdir -p dist/Payload
+          cp -R "$APP" dist/Payload/
+          (cd dist && zip -qry UbuntuPad-unsigned.ipa Payload)
+          ls -lh dist/UbuntuPad-unsigned.ipa
+
+      - name: Verify IPA structure
+        run: bash tools/verify-ipa.sh track-b-runtime/dist/UbuntuPad-unsigned.ipa
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: UbuntuPad-unsigned-ipa
+          path: track-b-runtime/dist/UbuntuPad-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 90
+
+  release:
+    name: Publish release
+    needs: ipa
+    if: >-
+      github.event_name == 'push' &&
+      (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: UbuntuPad-unsigned-ipa
+          path: dist
+
+      - name: Checksum
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum UbuntuPad-unsigned.ipa > UbuntuPad-unsigned.ipa.sha256
+          cat UbuntuPad-unsigned.ipa.sha256
+
+      - name: Publish rolling nightly release
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: nightly
+          name: Nightly build (unsigned IPA)
+          prerelease: true
+          body: |
+            Rolling unsigned IPA built from `main` at commit ${{ github.sha }}.
+
+            **This app is at Phase 0: it opens a diagnostics screen. There is no Linux runtime in
+            it yet.** Sideload it with AltStore, SideStore, Sideloadly or TrollStore. Never install
+            an unsigned IPA from a source you do not trust.
+
+            How to install: see docs/SETUP.md in the repository.
+          files: |
+            dist/UbuntuPad-unsigned.ipa
+            dist/UbuntuPad-unsigned.ipa.sha256
+
+      - name: Publish tagged release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/UbuntuPad-unsigned.ipa
+            dist/UbuntuPad-unsigned.ipa.sha256
