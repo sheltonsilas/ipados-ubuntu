@@ -26,7 +26,8 @@ enum ELFFixture {
             payload.append(bytes)
             cursor += UInt64(bytes.count)
         }
-        segments.append((1, 0x5, cursor, 0x4000_0000, 0x4000_0000, 0x40, 0x40, 0x1000))
+        // Flags 0x7 = read + write + execute, so the test exercises every flag bit the parser reads.
+        segments.append((1, 0x7, cursor, 0x4000_0000, 0x4000_0000, 0x40, 0x40, 0x1000))
         payload.append(Data(repeating: 0x90, count: 0x40))
 
         let headerSize = ELFImage.headerSize

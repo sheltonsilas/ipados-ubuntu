@@ -1,0 +1,17 @@
+# Keep every text file LF in the repository regardless of the machine that edits it.
+# The agent machine is Windows with `core.autocrlf`, and shell scripts and CI YAML must not
+# arrive on Linux runners with CRLF line endings (a CRLF shebang makes bash report
+# "bad interpreter").
+* text=auto eol=lf
+
+# Binary artefacts must never be line-ending converted.
+*.png binary
+*.jpg binary
+*.pdf binary
+*.ipa binary
+*.zip binary
+
+# Shell and workflow files are executed on Linux.
+*.sh text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
