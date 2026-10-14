@@ -18,7 +18,9 @@ screen. Nothing has been run on a real iPad, so every on-device claim is unverif
 | Core unit tests on Linux | **Passing** | `tests.yml` run 38598756785, success on `8feff5c` |
 | Unsigned IPA built by CI | **Passing** | `build-ipa.yml` run 38598756914, success on `8feff5c` |
 | IPA structure verified in CI | **Passing** | `tools/verify-ipa.sh`: arm64 slice present, unsigned, no provisioning profile, no secrets, bundle 328 KB |
-| Public release with a downloadable IPA | Works | <https://github.com/sheltonsilas/ipados-ubuntu/releases/tag/nightly> — `UbuntuPad-unsigned.ipa` (81,780 bytes) + `.sha256` |
+| Rolling `nightly` release with a downloadable IPA | Works | <https://github.com/sheltonsilas/ipados-ubuntu/releases/tag/nightly> — `UbuntuPad-unsigned.ipa` (81,780 bytes) + `.sha256` |
+| Tagged milestone release (`v*` tags) | Works | `v0.1.0` published as Latest from tag push, with the same two assets; the asset downloaded from its public URL matched its published SHA-256 (`4eacbe00…5fd1`) |
+| Final commit `a88fe65` (branch push **and** tag push) | **All four runs green** | `tests` 38603118590/38603123020 and `build-ipa` 38603118447/38603122806 |
 | Release asset integrity | Verified independently | Downloaded from the public URL, SHA-256 matched the published value exactly (`290b1e68…6a51`), archive contains `Payload/UbuntuPad.app/UbuntuPad` (arm64) |
 | ELF64/AArch64 parsing | Passing (synthetic + real binary) | 8 tests in `ELFTests`, including a real `-static` aarch64 binary cross-compiled in CI |
 | Syscall table consistency | Passing | 4 tests in `SyscallTableTests` |

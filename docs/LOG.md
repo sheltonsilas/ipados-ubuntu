@@ -50,6 +50,12 @@ what was done, what was learned, what was left unfinished.
   the archive (`Payload/UbuntuPad.app/UbuntuPad`, 328 KB bundle). **Phase 0 is complete.**
 - A Windows CRLF checkout risk was caught early and pinned with `.gitattributes` (`eol=lf`), because
   a CRLF shell script would break the Linux runners.
+- The tagged-release path (which only runs on `v*` tags and had never executed) was verified by
+  publishing `v0.1.0`: the release job published both assets as Latest, and the asset downloaded
+  from the public URL matched its published checksum (`4eacbe00…5fd1`).
+- Test jobs were pinned to `ubuntu-24.04` after the runner log warned that the `ubuntu-latest`
+  label migrates to Ubuntu 26 on 2026-10-19 — a silent toolchain change we do not want to inherit
+  (decision 0009).
 
 **Unfinished / next**
 
