@@ -69,6 +69,13 @@ owner in the browser via the device code.
 - No fixed expiry: it stays valid until revoked. Renewal is `gh auth login` again (see SETUP.md).
 - CI never uses this token: workflows use the built-in `GITHUB_TOKEN`.
 - Nothing about the token is committed; only its scopes and renewal steps are documented.
+- Related deviation, recorded for honesty: the repository was created with `gh repo create
+  ipados-ubuntu --public` rather than through the GitHub web interface as the brief suggested.
+  The result is identical (public repo, same name and owner) and it avoids a brittle sequence of
+  browser form interactions. GitHub's own LICENSE API was used to fetch the GPL-2.0 text so the
+  license file is byte-identical to the canonical text.
+- The token's OAuth *app* grant is per-account, not per-repository, so a future session on another
+  machine needs the owner to approve a login again — that is expected, not a leak.
 
 ---
 
