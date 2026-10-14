@@ -15,6 +15,10 @@ in CI (device-only criteria are marked and stay open until the owner reports on 
 **Exit criteria:** `build-ipa` and `tests` workflows are green on `main`; the `nightly` release
 contains a downloadable `.ipa`; the app's bundle contents are inspected and reported by CI.
 
+**Met on 2026-10-14** (commit `8feff5c`): `tests.yml` run 38598756785 and `build-ipa.yml` run
+38598756914 both succeeded; the `nightly` release asset was downloaded from its public URL and its
+SHA-256 matched the published checksum. The app itself is still **unverified on device**.
+
 ## Phase 1 — Track A baseline (usable app first)
 
 - [ ] Fork UTM into the owner's account and vendor it under `track-a-utm/`

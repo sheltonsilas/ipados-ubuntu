@@ -35,9 +35,24 @@ what was done, what was learned, what was left unfinished.
 - GitHub's OAuth app for the CLI already held `repo`, `gist`, `read:org` grants, so the resulting
   token is wider than `public_repo` — documented as a limitation in STATUS.md and decision 0002.
 
+**CI outcome (same session, later)**
+
+- The first run was red on `tests.yml`: the synthetic `PT_LOAD` fixture declared read+execute flags
+  while the test asserted the segment was writable — my own fixture bug, not a parser bug. Fixed by
+  using flags `0x7` so all three permission bits are parsed and checked.
+- After the fix both workflows passed on `main` (commit `8feff5c`): `tests.yml` run 38598756785 and
+  `build-ipa.yml` run 38598756914.
+- The IPA pipeline end to end: XcodeGen project generation, unsigned device build, hand-packaged
+  `Payload/*.ipa`, CI verification (arm64 slice, unsigned, no provisioning profile or key material,
+  no secrets, sane size), artifact upload, and publication to the rolling `nightly` release.
+- Independently verified the *public* download path: fetched `UbuntuPad-unsigned.ipa` from the
+  release URL with curl, confirmed its SHA-256 matches the published checksum exactly, and listed
+  the archive (`Payload/UbuntuPad.app/UbuntuPad`, 328 KB bundle). **Phase 0 is complete.**
+- A Windows CRLF checkout risk was caught early and pinned with `.gitattributes` (`eol=lf`), because
+  a CRLF shell script would break the Linux runners.
+
 **Unfinished / next**
 
-- First CI runs had not been observed at the time of writing; if either workflow is red, fix it
-  before starting Phase 1.
-- Track A (UTM fork) and Track B (ELF loader) not started.
-- Nothing has ever run on a real iPad: every iOS result is **unverified on device**.
+- Track A (UTM fork) and Track B (ELF loader, syscall dispatch) not started — that is Phase 1/2.
+- Nothing has ever run on a real iPad: every iOS result is **unverified on device**. The next
+  device-visible milestone is Phase 1 (a clickable Ubuntu desktop).
