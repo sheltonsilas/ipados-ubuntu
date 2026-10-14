@@ -39,6 +39,15 @@ test runs; check the test output rather than only the exit code.
 - The app has no VM, no guest image download, no terminal, no graphics.
 - The credential is wider than ideal (see below).
 
+## CI environment risks to watch
+
+- The tests workflow is **pinned to `ubuntu-24.04`** because the `ubuntu-latest` label migrates to
+  Ubuntu 26 on 2026-10-19 and the Swift toolchain on a new image is not something we want to
+  inherit silently (decision 0009). If a pin retires, change it deliberately and re-run.
+- A GitHub-runner warning on the first runs said the `ubuntu-latest` label would migrate; the
+  workflow prints `swift --version` and fails loudly if no toolchain is present, so a surprise
+  shows up as an attributed error rather than a mysterious test failure.
+
 ## Environment facts (agent machine, 2026-10-14)
 
 - Windows 11 + Git Bash tools; `git` and `gh` work, and a browser is available for GitHub web work.

@@ -211,3 +211,31 @@ before this is accepted; until then this entry stays **proposed**.
 
 **Consequences.** Phase 2 starts with the loader and the dispatch table (useful under every option)
 and defers the capture mechanism. Any change here must update this entry, not replace it.
+
+---
+
+## 0009 — Runner images are pinned, not floating labels
+
+**Date:** 2026-10-14 · **Status:** accepted
+
+**Context.** The brief suggested `ubuntu-latest`, and CI does need to stay free and GitHub-hosted.
+The first successful run's log carried a warning that **the `ubuntu-latest` label migrates to
+Ubuntu 26 beginning 2026-10-19**. The core tests depend on a Swift toolchain being present on the
+image, and CI cannot test Swift on any other platform we have (the agent machine has no Swift,
+and macOS runners are slower and metered). A silent image change could therefore turn every green
+build red for reasons unrelated to this project.
+
+**Options.**
+
+1. Keep `ubuntu-latest` and react if it breaks. Fewest keystrokes, but the failure would appear
+   unattributed in whatever future session happens to push next.
+2. Pin `ubuntu-24.04` and upgrade deliberately. Slightly more maintenance, but a runner image
+   change becomes a decision instead of an accident.
+3. Pin by digest/self-hosted. Not possible or not allowed here.
+
+**Choice:** option 2 — `ubuntu-24.04` for both jobs in `tests.yml`; `macos-15` is already pinned in
+`build-ipa.yml`.
+
+**Consequences.** When a new image is worth adopting (for example an Xcode or Swift version we
+want), that is an explicit commit. If `ubuntu-24.04` is ever retired, the fix is a one-line change
+plus a note here and in `docs/STATUS.md`.

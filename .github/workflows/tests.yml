@@ -19,8 +19,10 @@ concurrency:
 
 jobs:
   core:
-    name: Core unit tests (ubuntu-latest)
-    runs-on: ubuntu-latest
+    # Pinned, not `ubuntu-latest`: the label migrates to Ubuntu 26 on 2026-10-19 and the Swift
+    # toolchain on a new image is a variable we do not want to inherit silently (decision 0009).
+    name: Core unit tests (ubuntu-24.04)
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -59,8 +61,8 @@ jobs:
         run: swift test --filter ELFTests
 
   layout:
-    name: Repository layout and hygiene (ubuntu-latest)
-    runs-on: ubuntu-latest
+    name: Repository layout and hygiene (ubuntu-24.04)
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
