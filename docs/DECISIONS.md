@@ -662,11 +662,17 @@ the app would be a second thing to keep in step, and it is the copy that would b
   the guest program in the app bundle and parses its ELF header — AArch64, 64-bit, ET_DYN, no `PT_INTERP`
   — because those are exactly the properties the runtime refuses to run without. A packaging mistake or a
   wrong-toolchain binary fails the build instead of reaching the owner's iPad.
-- The app gains a **run button** and a **memory probe**, and both results go into the copyable  diagnostics block. This is the first device-visible Track B result and the first real answer to the
+- The app gains a **run button** and a **memory probe**, and both results go into the copyable diagnostics block. This is the first device-visible Track B result and the first real answer to the
   JIT question: Apple documents that writable-and-executable pages need an Apple-only entitlement, our
   design never asks for one (text is written while writable, then made executable), and whether that
   survives on a non-jailbroken iPad is now something the app *measures* rather than something we assume
   ([RESEARCH/jit-and-entitlements-on-ios.md](RESEARCH/jit-and-entitlements-on-ios.md)).
+- Correction from the next implementation pass: the **probe does not prove executable code can run**.
+  `mprotect(PROT_EXEC)` reports that a permission change was accepted; code-signing enforcement can
+  still stop execution. The app labels the result `notProbed` until a guest actually exits normally,
+  `disabled` if the mapping is refused, and `enabled` only after successful guest execution. The screen
+  also captures the guest's stdout through a concurrently-drained pipe so the owner sees the same bytes
+  the CI test asserts.
 - Honesty rule that this decision is subject to: until the owner reports back, every iOS statement is
   labelled **unverified on device**, and the diagnostics screen says what the app measured, not what we
   hope.
