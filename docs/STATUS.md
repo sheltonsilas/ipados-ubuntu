@@ -1,71 +1,75 @@
 # Status
 
-_Last updated: 2026-10-15 (Phase 2's exit criterion met in CI; Phase 1 in progress)._
+_Last updated: 2026-10-15 (Track B is inside the app; Track A is parked at the owner's instruction)._
 
 ## One-line summary
 
-**Phase 2's exit criterion is met in CI:** a static AArch64 **Linux** program is cross-compiled, executed
-**natively on an Apple-silicon runner**, and the guest's own stdout is asserted byte for byte — with a
-control run that proves the relocation pass is load-bearing and a refusal test for an image that cannot
-be mapped on this platform at all. **Phase 1 is in progress:** the fork's iOS build runs, but has not yet
-produced a downloadable IPA — its last two attempts died on `gstreamer.freedesktop.org` (curl 92, then
-curl 18 / HTTP 503), and the resumable pre-fetch fix is dispatched as run
-[38746321359](https://github.com/sheltonsilas/UTM/actions/runs/38746321359). **Nothing has run on a real
-iPad**: every iOS result is *unverified on device*.
+**The runtime now ships in the app.** A real arm64 **Linux** program is loaded, relocated, patched and
+executed by our own code on an Apple-silicon host, and the same program is verified **inside the
+unsigned IPA** that the nightly release publishes: the app links the same library CI asserts and carries
+the same guest binaries, byte for byte. The screen has a **Run** button and a **memory probe** in front
+of the owner. Track B is otherwise at Phase 2's end: what remains is Phase 3 (processes, pipes, a shell).
+**Nothing has run on a physical iPad yet**, so every iOS statement below is *unverified on device*.
+Track A is parked by the owner's decision (its blocker was `gstreamer.freedesktop.org`, not UTM's code).
+The complete Track B plan is [TRACK-B-PLAN.md](TRACK-B-PLAN.md).
 
-## Phase 2 evidence (commit `25eb56e`, all three workflows green)
-
-| Item | State | Evidence |
-| --- | --- | --- |
-| `tests` (unit tests + layout + hygiene) | **Passing** | run [38745174521](https://github.com/sheltonsilas/ipados-ubuntu/actions/runs/38745174521) |
-| `runtime-e2e` (execute a Linux guest on Apple silicon) | **Passing** | run [38745174715](https://github.com/sheltonsilas/ipados-ubuntu/actions/runs/38745174715) — "all guest-run assertions passed" |
-| `build-ipa` (Phase 0 pipeline still green) | **Passing** | run [38745174900](https://github.com/sheltonsilas/ipados-ubuntu/actions/runs/38745174900) |
-| Guest's stdout, produced by guest code on the guest's stack | Verified | `hello from a position-independent aarch64 linux`, between the runner's markers, `exit=normal status=0` |
-| Image placement on a 16 KiB host | Verified | `reserved_low_region_bytes=4294967296`, `image_placement=biased requested_bias=0x7000000000`, `image_mapping=biased attempt=1 bias=0x7000000000` |
-| Relative relocations applied for that base | Verified | `relative_relocations=1 applied=1`; the same guest run with `--skip-relocations` faults (`exit=fault status=11`) and prints nothing, so the pass is what makes it work |
-| A fixed-address (ET_EXEC) image is refused, with a reason | Verified | `this is a fixed-address (ET_EXEC) executable linked at 0x400000, which is inside the 4 GiB … A position-independent build … can be loaded at a bias instead` |
-| Linux initial stack seen by the guest | Verified | `argc=3 argv0=…/stack-probe-nostdlib envp_entries=4 pagesz=4096 phnum=7 auxv_entries=18 entry=0x7000000558` (the entry carries the bias) |
-| Executable memory **without** JIT entitlements | Works on the runner | `probe` reports `rx_mapping=ok` unsigned, so the write-then-execute strategy needs no entitlement there; **unverified on device** |
-| Syscall capture (rewrite `svc` to `brk`, handle SIGTRAP) | Verified | `patched_syscall_sites=2` on both freestanding guests, and each guest's syscalls were serviced by Swift |
-| Relocation/placement unit coverage, including a real PIE binary | Passing | `ImagePlacementTests`, `RelocationTests` (the latter parses and applies a real `-static-pie` binary's `.rela.dyn`) |
-
-Known limitation of the evidence: the guest is a **freestanding** program (no libc) — a real Ubuntu
-binary is dynamically linked, which is Phase 4 work, not proof this is not.
-
-## Phase 1 evidence
+## Evidence — commit `3f2d878`, all three workflows green
 
 | Item | State | Evidence |
 | --- | --- | --- |
-| UTM fork + CI definition owned by this repository | Works | `sheltonsilas/UTM@ubuntupad-ci`, pushed by `track-a-utm/tools/push-fork-ci.sh` (decision 0017) |
-| Fork's iOS build produces an unsigned IPA | **Not yet** | runs 38732453357 and 38735794962 both failed on the *same third-party host* (`gstreamer.freedesktop.org`): first curl 92, then curl 18 (truncated transfer) after five retries. Fix dispatched: [38746321359](https://github.com/sheltonsilas/UTM/actions/runs/38746321359) |
-| Preconfigured Ubuntu arm64 guest preset | Not started | Phase 1 |
-| Boot time on a real iPad | Not measured | needs the owner |
+| `tests` (unit tests, layout, hygiene) | **Passing** | run [38758466445](https://github.com/sheltonsilas/ipados-ubuntu/actions/runs/38758466445) — both jobs success |
+| `runtime-e2e` (execute a Linux guest on Apple silicon) | **Passing** | run [38758466379](https://github.com/sheltonsilas/ipados-ubuntu/actions/runs/38758466379) — "all guest-run assertions passed" |
+| `build-ipa` (unsigned IPA) | **Passing** | run [38758466487](https://github.com/sheltonsilas/ipados-ubuntu/actions/runs/38758466487) — guest-programs, ipa and release jobs all success |
+| Guest's stdout from guest code | Verified | `hello from a position-independent aarch64 linux`, between the runner's markers, `exit=normal status=0` |
+| Placement and relocation | Verified | `image_mapping=biased attempt=1 bias=0x7000000000`, `relative_relocations=1 applied=1`; with `--skip-relocations` the same guest prints nothing and faults |
+| A fixed-address image is refused, with a reason | Verified | the refusal names `0x400000` and says a position-independent build would run |
+| Linux initial stack | Verified | `argc=3 … pagesz=4096 … auxv_entries=18`, `AT_ENTRY=0x7000000558` (biased) |
+| Executable memory without entitlements (on the runner) | Works | `rx_mapping=ok` unsigned; no re-signing step was needed |
+| **A Linux program inside the app bundle** | Verified | `verify-ipa.sh`: `ok: …/Payload/UbuntuPad.app/hello-pie-nostdlib is a static AArch64 Linux PIE (67880 bytes)` and the stack probe (67904 bytes) |
+| **The app's guest is the one CI executed** | Verified | identical BuildIDs: `7717885b…` (hello) and `d7f2ccc6…` (stack probe) in both the `runtime-e2e` run and the extracted IPA |
+| **The app builds with the runtime linked** | Verified | `build-ipa` compiles `UbuntuPadRunner` and `UbuntuPadHost` for `iphoneos` (target `arm64-apple-ios16.0` after the platform declaration) and produces the app |
+| Downloadable artifact refreshed | Verified | `nightly` release asset `UbuntuPad-unsigned.ipa`, 226,966 bytes + `.sha256`, uploaded 2026-10-15T15:15:39Z |
+| The runtime running **on a real iPad** | **Unverified on device** | nobody has installed this build yet; the checklist is in [SETUP.md](SETUP.md) |
+| Whether the iPad lets the app execute pages it wrote | **Unverified on device** | this is what the app's probe reports; CI cannot answer it |
+
+The one honest limit of the whole table: the app and the CLI link the *same* `UbuntuPadRunner` code, so
+the run path is the one CI exercises — but "the same code compiled for iOS" is not "observed running on
+iOS". Only the owner's paste of the diagnostics block closes that gap.
 
 ## What is broken / not started
 
-- **Phase 1 has no usable app yet**: no IPA, no guest image, no VM configuration.
-- The Phase 2 runtime is **not wired into the iOS app**: the app still opens a diagnostics screen only.
-- No real-device testing of any kind.
-- Phase 2's leftovers: `fork`/`clone`/`execve`, threads and signals, guest TLS, a filesystem.
-- The iOS shell has no terminal and no way to feed the runtime a binary.
+- **No device test of anything.** Track B's probe may well answer "refused" on an unentitled iPad; the
+  design avoids a writable-and-executable page precisely so that it has a chance, and the app measures
+  the answer instead of assuming it.
+- Track A is **parked**. Its last fork run (38746321359) was never read; the GStreamer pre-fetch fix is
+  in `track-a-utm/ci/ubuntupad-ios.yml` and unproven.
+- Phase 3+ is not started: `fork`/`clone`/`execve`, threads, pipes, signals, a filesystem, dynamic
+  linking. The design for the process model is decision 0021; the order of work is
+  [TRACK-B-PLAN.md](TRACK-B-PLAN.md) §2.
+- A dynamically linked binary, `/proc`, `/dev`, pty, sockets, epoll, futex and timers are all still
+  `ENOSYS`, and the run's `unimplemented=` line is the list to work from.
+- The app has no terminal and no way to feed in an arbitrary binary: it runs the two programs it ships.
 
 ## CI environment risks to watch
 
-- `tests` and the cross-compile job are **pinned to `ubuntu-24.04`** because the `ubuntu-latest` label
-  migrates to Ubuntu 26 on 2026-10-19 (decision 0009). The end-to-end job is pinned to `macos-15` for the
-  same reason (decision 0013): a 16 KiB-page arm64 host is the design's premise.
-- `gstreamer.freedesktop.org` is a single point of failure for Track A (decision 0014). It has been
-  intermittently 503 for hours at a time; the fork's build cannot proceed without those three tarballs.
-- A macOS runner's **address-space layout is a moving target**: the first green run needed the adaptive
-  candidate because twelve planned biases were refused (decision 0019). The runtime reports every
-  attempt, so a future layout change shows up as a readable log line instead of a mysterious refusal.
+- `tests`/`runtime-e2e` are pinned to `ubuntu-24.04` and `macos-15` on purpose (decisions 0009, 0013):
+  a 16 KiB-page arm64 host is the design's premise.
+- `gstreamer.freedesktop.org` remains a single point of failure for Track A whenever it is resumed
+  (decision 0014).
+- A macOS runner's address-space layout is a moving target; the runtime reports every placement attempt,
+  so a layout change shows up as a readable log line (decision 0019).
+- **SwiftPM platform defaults.** The package had no `platforms:` declaration, so the app built the C shim
+  with `-target arm64-apple-ios12.0` while the app targets iOS 16 — an availability mismatch that would
+  silently disable every version check. Fixed this session in `Package.swift`; if a future change drops
+  that line, `build-ipa`'s log is where it shows.
 
 ## Environment facts (agent machine, 2026-10-15)
 
 - Windows 11 + Git Bash; `git`, `gh`, `curl`, `python3` (with `pyyaml`) work.
 - **No local `swift`, `xcodebuild` or `aarch64-linux-gnu-gcc`**: Swift compilation, the iOS build and
-  every guest-execution result are verified **only in CI**. Workflow YAML and shell scripts can be
-  syntax-checked locally (`bash -n`, `yaml.safe_load`), and that is done before every push.
+  every guest-execution result are verified **only in CI**. Shell scripts are checked with `bash -n`,
+  workflows with `yaml.safe_load`, and the ELF check inside `verify-ipa.sh` was exercised locally
+  against synthetic ELF files (accept a static PIE; reject ET_EXEC, PT_INTERP, x86_64 and non-ELF).
 - The owner is signed in to GitHub in the agent browser as `sheltonsilas`.
 
 ## Credentials
@@ -80,14 +84,16 @@ binary is dynamically linked, which is Phase 4 work, not proof this is not.
 
 ## Next tasks (in order)
 
-1. **Phase 1:** watch fork run 38746321359. If `gstreamer.freedesktop.org` is still refusing, decide
-   between (a) caching the three tarballs as a release asset in this repository and pointing the workflow
-   at it, (b) building the sysroot without GStreamer if the iOS target can link without it, or (c)
-   waiting — and record the choice in DECISIONS.md. The IPA is the gate for everything the owner can see.
-2. **Wire the runtime into the iOS shell**: bundle a PIE guest binary, keep the diagnostics screen, and
-   add a button that runs it through `UbuntuPadCore`/`UbuntuPadHost` on the device. This is the first
-   *device-visible* Phase 2 result and the first real test of the entitlement story.
-3. **Phase 3 start:** a static busybox, then a shell script with pipes and redirection (the phase's exit
-   criterion). Decide `fork`/`clone` strategy first, since pipes need it.
-4. Give the owner the on-device checklist (install, enable JIT, screenshot diagnostics) and keep every
-   unverified item labelled honestly until they report back.
+1. **The owner's device report.** Give them the four-step checklist (install the nightly IPA, enable JIT,
+   press Run on both programs, paste the diagnostics block into an issue). Every "unverified on device"
+   line in this file turns into either evidence or a bug report, and the probe's `rx_mapping=` decides
+   how much of Phase 5 is possible.
+2. **B3, first slice:** the guest process table in the portable core — one guest task per host thread,
+   `clone` flags classified rather than forwarded, `wait` state, per-task signal masks — with unit tests
+   for the flag combinations that matter (decision 0021 designs it).
+3. **B3, second slice:** `clone`/`fork`/`wait4` services plus pipes, and a fork-and-pipe guest added to
+   `tools/build-guest-binaries.sh` and asserted in `runtime-e2e`.
+4. **B4:** a static busybox from a pinned, checksummed release, running `sh -c` with pipes and
+   redirection in CI — Phase 3's exit criterion.
+5. **B5, first slice:** `PT_INTERP` and symbol-based relocations (the dynamic loader), tested against a
+   real Ubuntu arm64 binary fetched from Ubuntu's own archive.

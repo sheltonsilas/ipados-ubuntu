@@ -7,6 +7,12 @@ import PackageDescription
 
 let package = Package(
     name: "UbuntuPadCore",
+    // Stated, not inherited. Without this SwiftPM assumes iOS 12 for the package's targets, and the iOS
+    // app builds them with `-target arm64-apple-ios12.0` (measured in build-ipa's log) — so an API like
+    // `os_proc_available_memory()` (iOS 13+) is compiled against a deployment target the app does not
+    // have, and the availability checks stop meaning anything. iOS 16 is the app's deployment target
+    // (`ios/project.yml`); macOS 13 is below both runners and the owner's Macs.
+    platforms: [.iOS(.v16), .macOS(.v13)],
     products: [
         .library(name: "UbuntuPadCore", targets: ["UbuntuPadCore"]),
         // The run pipeline itself, as a library rather than a slice of the CLI, so that the iPad app and

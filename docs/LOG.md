@@ -5,6 +5,61 @@ what was done, what was learned, what was left unfinished.
 
 ---
 
+## 2026-10-15 — Session 4: Track B planned end to end, and the runtime moved into the app
+
+**Done**
+
+- Wrote [TRACK-B-PLAN.md](TRACK-B-PLAN.md): the six design problems the mission names, what is
+  decided about each, the milestones B1-B8 with their exit criteria, the order they have to happen in
+  and what could kill the work. Researched the three unknowns first rather than guessing: the process
+  model ([process-model-without-fork.md](RESEARCH/process-model-without-fork.md)), the device's
+  executable-memory and memory-limit reality (added a second pass to
+  [jit-and-entitlements-on-ios.md](RESEARCH/jit-and-entitlements-on-ios.md)) and the display path
+  ([desktop-graphics-path.md](RESEARCH/desktop-graphics-path.md)).
+- Recorded decision **0020** (the run pipeline is a library the CLI and the app both link, and the app
+  carries a guest program CI has verified) and **0021** (the guest process model: one guest task per
+  host thread, modelled `clone` flags, and an eager address-space copy because guest writes cannot be
+  trapped when the code runs natively).
+- Made it real: `GuestRunner` and the syscall session moved into a new `UbuntuPadRunner` library,
+  `ubuntupad-run` became a thin CLI over it, and `HostProbe` (the host facts, measured) moved in there
+  too so the CLI and the app report the same lines in the same words. The iPad app links that product,
+  bundles two guest programs, and shows a Run button, the guest's output and the probe result.
+- One place builds the guests: `tools/build-guest-binaries.sh`, called by `runtime-e2e.yml` (which
+  executes them), `tests.yml` (which tests the loader against them) and `build-ipa.yml` (which bundles
+  two of them), so the guest the owner runs cannot drift from the guest CI proved.
+- `tools/verify-ipa.sh` now opens the published artifact and parses the guest's ELF header inside the
+  app bundle: AArch64, ET_DYN, no `PT_INTERP`. A packaging or toolchain mistake fails the build instead
+  of reaching the iPad.
+- Green on `3f2d878`: `tests` 38758466445, `runtime-e2e` 38758466379, `build-ipa` 38758466487, and the
+  `nightly` release refreshed with `UbuntuPad-unsigned.ipa` (226,966 bytes).
+
+**Learned**
+
+- **The evidence chain can be checked byte for byte.** The two guest programs in the IPA have the same
+  BuildIDs (`7717885b…`, `d7f2ccc6…`) as the ones `runtime-e2e` executed on Apple silicon minutes
+  earlier, so "the app carries a program CI has run" is a fact about the artifact, not a hope.
+- **`os_proc_available_memory()` does not exist on macOS.** The macOS 15 SDK marks it unavailable and the
+  build failed on it — the research note's claim that it is model- and platform-dependent was right, and
+  the runtime now answers "will not say" (printed as `available_memory_bytes=unknown`) instead of a
+  number nobody measured.
+- **SwiftPM assumes iOS 12 for a package that does not declare `platforms:`.** `build-ipa`'s log showed
+  the C shim compiled with `-target arm64-apple-ios12.0` while the app targets iOS 16: every availability
+  check in the shim was being measured against the wrong minimum. Declared iOS 16 / macOS 13 explicitly.
+- The macOS probe *signed nothing*: `rx_mapping=ok` on the runner without entitlements, so the
+  write-then-execute strategy still needs no JIT there. On the iPad that remains open, which is exactly
+  what the app's probe is for.
+
+**Unfinished / next**
+
+- Nothing has run on a physical iPad. The owner's checklist (install, enable JIT, press Run, paste the
+  diagnostics block) is the next task in STATUS.md, and the probe's `rx_mapping=` is the line that
+  matters most in the paste.
+- Track A is parked by the owner's instruction; fork run 38746321359 was never read, so the GStreamer
+  pre-fetch fix is still unproven.
+- Phase 3 begins with the guest process table (decision 0021): tasks on host threads, `clone` flags
+  classified, `fork`/`wait4`/pipes next, then a shell.
+
+---
 ## 2026-10-15 — Session 3: the low 4 GiB is a kernel rule, so guest images are placed and relocated
 
 **Done**
