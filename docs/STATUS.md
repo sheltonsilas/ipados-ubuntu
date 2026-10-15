@@ -13,13 +13,13 @@ of the owner. Track B is otherwise at Phase 2's end: what remains is Phase 3 (pr
 Track A is parked by the owner's decision (its blocker was `gstreamer.freedesktop.org`, not UTM's code).
 The complete Track B plan is [TRACK-B-PLAN.md](TRACK-B-PLAN.md).
 
-## Latest all-green CI — commit `57481af` (the app artifact is from the `4918a9e` build)
+## Latest all-green CI — commit `19ff1f2` (the app artifact is from the `4918a9e` build)
 
 | Item | State | Evidence |
 | --- | --- | --- |
-| `tests` (unit tests, layout, hygiene) | **Passing** | run [38766817529](https://github.com/sheltonsilas/ipados-ubuntu/actions/runs/38766817529) — both jobs success; process table adds 10 tests, 115 total passed |
-| `runtime-e2e` (execute a Linux guest on Apple silicon) | **Passing** | run [38766817556](https://github.com/sheltonsilas/ipados-ubuntu/actions/runs/38766817556) — "all guest-run assertions passed" |
-| `build-ipa` (unsigned IPA) | **Passing** | run [38766817454](https://github.com/sheltonsilas/ipados-ubuntu/actions/runs/38766817454) — guest-programs, ipa and release jobs all success |
+| `tests` (unit tests, layout, hygiene) | **Passing** | run [38767691556](https://github.com/sheltonsilas/ipados-ubuntu/actions/runs/38767691556) — both jobs success; process table adds 11 tests, 116 total passed |
+| `runtime-e2e` (execute a Linux guest on Apple silicon) | **Passing** | run [38767691427](https://github.com/sheltonsilas/ipados-ubuntu/actions/runs/38767691427) — "all guest-run assertions passed" |
+| `build-ipa` (unsigned IPA) | **Passing** | run [38767691479](https://github.com/sheltonsilas/ipados-ubuntu/actions/runs/38767691479) — guest-programs, ipa and release jobs all success |
 | Guest's stdout from guest code | Verified | `hello from a position-independent aarch64 linux`, between the runner's markers, `exit=normal status=0` |
 | Placement and relocation | Verified | `image_mapping=biased attempt=1 bias=0x7000000000`, `relative_relocations=1 applied=1`; with `--skip-relocations` the same guest prints nothing and faults |
 | A fixed-address image is refused, with a reason | Verified | the refusal names `0x400000` and says a position-independent build would run |
@@ -45,7 +45,7 @@ iOS". Only the owner's paste of the diagnostics block closes that gap.
 - Track A is **parked**. Its last fork run (38746321359) was never read; the GStreamer pre-fetch fix is
   in `track-a-utm/ci/ubuntupad-ios.yml` and unproven.
 - B3 is **started, not complete**: the first portable process-table slice models clone sharing,
-  signal state, task IDs and zombies (10 tests, green on Linux CI), but it is not integrated with the
+  signal state, task IDs and zombies (11 tests, green on Linux CI), but it is not integrated with the
   dispatcher, host pthread startup, or address-space copying yet; the design is decision 0021. Pipes,
   execve, signals to running guests, a filesystem and dynamic linking remain open. The order of work is
   [TRACK-B-PLAN.md](TRACK-B-PLAN.md) §2.
