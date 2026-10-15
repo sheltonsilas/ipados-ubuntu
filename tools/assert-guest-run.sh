@@ -71,7 +71,9 @@ cat "$work/hello.log"
 check_contains "$work/hello.log" "patched_syscall_sites=2" \
   "exactly the two syscall sites we wrote (write and exit_group) were patched"
 check_contains "$work/hello.log" "image_placement=biased" \
-  "the image was placed at a bias instead of its link-time addresses"
+  "the plan was to place the image at a bias instead of its link-time addresses"
+check_contains "$work/hello.log" "image_mapping=biased" \
+  "the mapping landed at a biased base (and the run says which attempt)"
 check_contains "$work/hello.log" "exit=normal status=0" "the guest ran to exit_group"
 
 # The relocation pass ran and did real work: it is what makes the guest's own data pointers valid.
@@ -147,7 +149,9 @@ check_contains "$work/stack.log" "phnum=" "AT_PHNUM is present"
 
 # AT_PHDR and AT_ENTRY are addresses in the *running* guest, so they must carry the bias. The probe
 # prints AT_ENTRY; it cannot be the small link-time value once the image has been moved.
-entry="$(awk -F'entry=' '/entry=0x/{split($2, a, " "); print a[1]; exit}' "$work/stack.log")"
+# Parsed from the guest's own stdout, not the log: the runner also prints an `entry=` field, and only
+# the guest's value comes from AT_ENTRY (i.e. from the addresses the runtime actually mapped).
+entry="$(guest_stdout "$work/stack.log" | awk -F'entry=' '{split($2, a, " "); print a[1]; exit}')"
 if [ -n "${entry:-}" ]; then
   value=$((entry))
   if [ "$value" -ge 4294967296 ]; then

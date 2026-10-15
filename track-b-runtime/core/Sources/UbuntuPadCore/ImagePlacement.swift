@@ -52,9 +52,19 @@ public enum ImagePlacementError: Error, Equatable, CustomStringConvertible {
 }
 
 public struct ImagePlacementPlanner {
-    /// Bias targets are only ever a starting point: the mapping itself may land elsewhere, and the
-    /// caller recomputes the bias from where it actually landed.
-    public static let defaultBiasTarget: UInt64 = 0x2_0000_0000  // 8 GiB: comfortably above the floor
+    /// Where a position-independent image would like to live.
+    ///
+    /// A bias is only ever a *suggestion*: another mapping may already own the address, and a host that
+    /// says no is answering by placing the image elsewhere — which the runtime must not accept, because
+    /// a guest address is a host address here. 64 GiB is chosen to be far away from the regions the
+    /// platform uses for its own purposes: on `macos-15` (16 KiB pages, Xcode 16) a hint at 8 GiB was
+    /// refused and the kernel moved it to 12 GiB, while 64 GiB was honoured on the first attempt.
+    public static let defaultBiasTarget: UInt64 = 0x10_0000_0000  // 64 GiB, well clear of the floor
+
+    /// How far apart successive attempts are placed (16 GiB), and how many there are. Each candidate
+    /// keeps the image's alignment, so one of them succeeds unless the address space is genuinely full.
+    public static let biasRetryStep: UInt64 = 0x4_0000_0000
+    public static let biasAttemptCount = 12
 
     public init() {}
 
@@ -108,20 +118,42 @@ public struct ImagePlacementPlanner {
             bias: biasPlacingLowest(lowest, atOrAbove: max(biasTarget, reservedLowRegion), alignment: alignment))
     }
 
-    /// A bias such that the image's *lowest* virtual address lands at or above `floor` **and** that
-    /// landing address stays congruent to the lowest address modulo `alignment`.
+    /// A bias that is a whole number of `alignment` steps **and** puts the image's lowest virtual
+    /// address at or above `floor`.
     ///
-    /// That congruence is what keeps every segment's ELF alignment rule
-    /// (`(bias + p_vaddr) % p_align == p_offset % p_align`) true after the shift, which is why the bias
-    /// is derived this way instead of being rounded to a "nice" number.
-    private func biasPlacingLowest(_ lowest: UInt64, atOrAbove floor: UInt64, alignment: UInt64) -> UInt64 {
-        guard alignment > 1 else {
-            return floor > lowest ? floor - lowest : 0
-        }
-        // The gap from `lowest` to the floor, rounded up to a whole number of alignment steps.
+    /// Being a multiple of the alignment is what keeps every segment's ELF alignment rule
+    /// (`(bias + p_vaddr) % p_align == p_offset % p_align`) true after the shift, so the bias is derived
+    /// from the image rather than rounded to a "nice" number. Public because the runner asks for a new
+    /// bias when a host refuses one: the kernel's answer to a refused hint is a free address, and any
+    /// address can be turned into a usable base only through this rule.
+    public func bias(lowest: UInt64, atOrAbove floor: UInt64, alignment: UInt64) -> UInt64 {
         var gap = floor > lowest ? floor - lowest : 0
+        guard alignment > 1 else { return gap }
         let remainder = gap % alignment
         if remainder != 0 { gap += alignment - remainder }
         return gap
+    }
+
+    /// The biases to try, in order, when a host will not honour the first one.
+    ///
+    /// Every candidate satisfies both rules above, so an image placed at any of them is correct; the
+    /// list only exists because *where* a mapping lands is the host's decision when the requested
+    /// address is taken. `step` is a multiple of 16 GiB so that the candidates stay aligned for every
+    /// alignment an ELF image can declare (up to 64 KiB).
+    public func biasCandidates(
+        lowest: UInt64,
+        atOrAbove floor: UInt64,
+        alignment: UInt64,
+        attempts: Int = ImagePlacementPlanner.biasAttemptCount,
+        step: UInt64 = ImagePlacementPlanner.biasRetryStep
+    ) -> [UInt64] {
+        var candidates = [bias(lowest: lowest, atOrAbove: floor, alignment: alignment)]
+        guard attempts > 1 else { return candidates }
+        for attempt in 1..<attempts {
+            let candidate = bias(
+                lowest: lowest, atOrAbove: floor &+ UInt64(attempt) &* step, alignment: alignment)
+            if !candidates.contains(candidate) { candidates.append(candidate) }
+        }
+        return candidates
     }
 }

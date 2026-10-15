@@ -160,6 +160,56 @@ final class ImagePlacementTests: XCTestCase {
         }
     }
 
+    // MARK: - retrying a refused bias
+
+    /// A bias is a suggestion, and a hint the host refuses is not a failure of the plan — but the
+    /// *next* address must obey the same two rules (above the floor, aligned), or the image would be
+    /// correct at one base and silently broken at the next. That conversion is tested here rather than
+    /// in the runner, because it is the same arithmetic in both places.
+    func testEveryRetryCandidateKeepsTheImagesAlignmentAndClearsTheFloor() throws {
+        let planner = ImagePlacementPlanner()
+        let candidates = planner.biasCandidates(
+            lowest: 0, atOrAbove: Self.fourGiB, alignment: Self.sixtyFourKiB)
+
+        XCTAssertEqual(candidates.count, ImagePlacementPlanner.biasAttemptCount)
+        XCTAssertEqual(candidates.first, Self.fourGiB)
+        XCTAssertEqual(Set(candidates).count, candidates.count, "candidates must be distinct")
+        for (index, bias) in candidates.enumerated() {
+            XCTAssertEqual(bias % Self.sixtyFourKiB, 0, "candidate \(index) breaks the alignment rule")
+            XCTAssertGreaterThanOrEqual(bias, Self.fourGiB)
+            if index > 0 {
+                XCTAssertGreaterThan(bias, candidates[index - 1], "candidates must increase")
+            }
+        }
+    }
+
+    /// The conversion the runner uses when the host answers a refused hint with a free address.
+    func testABiasCanBeDerivedFromAnyFreeAddress() throws {
+        let planner = ImagePlacementPlanner()
+        // The address the kernel offered on macos-15 in place of a refused 8 GiB hint, for the real
+        // guest image (lowest virtual address 0).
+        let offered: UInt64 = 0x3_0000_0000
+        let bias = planner.bias(lowest: 0, atOrAbove: offered, alignment: Self.sixtyFourKiB)
+        XCTAssertEqual(bias, offered)
+
+        // An unaligned offer is rounded up rather than used as-is.
+        let unaligned: UInt64 = 0x3_0000_8000
+        let rounded = planner.bias(lowest: 0, atOrAbove: unaligned, alignment: Self.sixtyFourKiB)
+        XCTAssertEqual(rounded, 0x3_0001_0000)
+        XCTAssertEqual(rounded % Self.sixtyFourKiB, 0)
+
+        // An image whose lowest address is already above the floor needs no bias at all.
+        XCTAssertEqual(planner.bias(lowest: 0x5_0000_0000, atOrAbove: Self.fourGiB, alignment: 0x1000), 0)
+    }
+
+    /// The default target must be well clear of the floor and of the regions the platform uses for its
+    /// own mappings; a hint inside those is refused, which is why the runner also retries.
+    func testDefaultBiasTargetIsFarAboveTheReservedRegion() throws {
+        XCTAssertGreaterThan(ImagePlacementPlanner.defaultBiasTarget, Self.fourGiB * 8)
+        XCTAssertEqual(ImagePlacementPlanner.defaultBiasTarget % Self.sixtyFourKiB, 0)
+        XCTAssertGreaterThanOrEqual(ImagePlacementPlanner.biasRetryStep, Self.sixtyFourKiB)
+    }
+
     func testImageWithNoLoadableSegmentsIsAnError() throws {
         let noSegments = image(kind: .executable, segments: [])
         XCTAssertThrowsError(

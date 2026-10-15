@@ -45,6 +45,7 @@ final class GuestRunner {
         case relocationFailed(String)
         case unsupportedRelocations(types: [UInt32])
         case cannotMapImage(address: UInt64, length: UInt64, landedAt: UInt64, errno: Int32)
+        case cannotMapImageAtAnyBias(attempts: [String])
         case cannotMapStack
         case segmentOutsideImage(name: String)
         case protectionFailed(address: UInt64, length: UInt64)
@@ -63,6 +64,9 @@ final class GuestRunner {
             case let .cannotMapImage(address, length, landedAt, errorNumber):
                 return
                     "cannot map the guest image at 0x\(String(address, radix: 16)) (0x\(String(length, radix: 16)) bytes, errno \(errorNumber))\(landedAt == 0 ? "" : "; the kernel offered 0x\(String(landedAt, radix: 16))"). A guest address must be a host address, so the runtime refuses to continue rather than run the image somewhere its own pointers do not point."
+            case let .cannotMapImageAtAnyBias(attempts):
+                return
+                    "no address this host would honour produced a valid mapping. Every attempt is listed, because each one is a fact about the address space: \(attempts.joined(separator: "; ")). A guest address must be a host address, so running the image somewhere else is not an option."
             case .cannotMapStack:
                 return "cannot reserve the guest stack"
             case let .segmentOutsideImage(name):
@@ -131,6 +135,18 @@ final class GuestRunner {
 
         let plan = try PatchPlanner().plan(image: image, bytes: bytes)
 
+        // The relocation table is read from the file now and applied once the base is known, because on
+        // this host the base is not known until the mapping actually lands (see `mapImage`).
+        var relocationTable: RelocationTable?
+        if let dynamic = try DynamicSection.parse(image: image, bytes: bytes) {
+            var table = RelocationTable()
+            try table.parse(dynamic: dynamic, image: image, bytes: bytes)
+            if table.unsupportedCount > 0 {
+                throw RunError.unsupportedRelocations(types: table.unsupported.map { $0.type })
+            }
+            relocationTable = table
+        }
+
         // --- 2. where can this image live on this host?
         //
         // On Apple silicon the answer is never "at its link-time addresses" for a normal Linux
@@ -143,21 +159,25 @@ final class GuestRunner {
         if case let .refused(reason) = placement {
             throw RunError.cannotRunOnThisHost(reason: reason)
         }
-        let bias = placement.bias
-        let placementName = bias == 0 ? "identity" : "biased"
         emit(
-            "image_placement=\(placementName) bias=0x\(String(bias, radix: 16)) reserved_low_region_bytes=\(reservedLowRegion)"
+            "image_placement=\(placement.bias == 0 ? "identity" : "biased") requested_bias=0x\(String(placement.bias, radix: 16)) reserved_low_region_bytes=\(reservedLowRegion)"
         )
 
-        // --- 3. make the image correct for that base by applying its own relocations
+        // --- 3. map the image where it can live, and learn where that turned out to be
+        //
+        // The mapping decides the base, not the other way round: the host may not honour the requested
+        // address, and a guest address must be a host address, so an image whose requested base is taken
+        // is placed at the next candidate instead of somewhere arbitrary.
+        let mapping = try mapImage(image: image, placement: placement, geometry: geometry)
+        let bias = mapping.bias
+        emit(
+            "image_mapping=\(mapping.mechanism) bias=0x\(String(bias, radix: 16)) span=0x\(String(mapping.lowest, radix: 16))-0x\(String(mapping.highest, radix: 16))"
+        )
+
+        // --- 4. make the image correct for that base by applying its own relocations
         var relocatedImage = plan.patchedImage
         var relativeRelocations = 0
-        if let dynamic = try DynamicSection.parse(image: image, bytes: bytes) {
-            var table = RelocationTable()
-            try table.parse(dynamic: dynamic, image: image, bytes: bytes)
-            if table.unsupportedCount > 0 {
-                throw RunError.unsupportedRelocations(types: table.unsupported.map { $0.type })
-            }
+        if let table = relocationTable {
             if !options.skipRelocations {
                 do {
                     relativeRelocations = try table.apply(to: &relocatedImage, image: image, bias: bias)
@@ -174,20 +194,9 @@ final class GuestRunner {
             emit("relative_relocations=none (the image has no PT_DYNAMIC segment)")
         }
 
-        // --- 4. map the image at its own virtual addresses, moved by the bias
         let loadSegments = image.loadSegments
-        guard
-            let lowest = loadSegments.map({ geometry.roundDownToHostPage($0.virtualAddress + bias) }).min(),
-            let highest = loadSegments.map({
-                geometry.roundUpToHostPage($0.virtualAddress + bias + $0.memorySize)
-            }).max()
-        else {
-            throw RunError.cannotReadImage("the image has no PT_LOAD segments")
-        }
-        let imageLength = highest - lowest
-        emit("image_span=0x\(String(lowest, radix: 16))-0x\(String(highest, radix: 16))")
-        try mapImage(address: lowest, length: imageLength)
-        emit("image_mapping=\(bias == 0 ? "identity" : "biased-by-0x\(String(bias, radix: 16))")")
+        let lowest = mapping.lowest
+        let highest = mapping.highest
 
         var space = GuestAddressSpace(geometry: geometry)
 
@@ -319,25 +328,70 @@ final class GuestRunner {
             unimplemented: dispatcher.trace.unknownNumbers.sorted())
     }
 
-    /// Maps the image so that `address` is where it actually lands.
+    /// Maps the image and reports the base it actually landed at.
     ///
-    /// There is exactly one mechanism, a hint, and one rule: the kernel's answer must be the address we
+    /// There is one mechanism, a hint, and one rule: the kernel's answer must be the address that was
     /// asked for. A guest address *is* a host address here, so a mapping that lands anywhere else means
-    /// the guest's own pointers point somewhere unintended, and the run is refused rather than
-    /// continued. (`MAP_FIXED` would make the address come true by discarding whatever is already
-    /// there — the runtime never wants that, and on Apple silicon it could not reach the reserved low
-    /// region anyway; the placement decision happens earlier, in portable code.)
-    private func mapImage(address: UInt64, length: UInt64) throws {
-        var landed: UInt64 = 0
-        guard up_reserve(address, Int(length), Int32(UP_RESERVE_HINT), &landed) != nil else {
-            throw RunError.cannotMapImage(
-                address: address, length: length, landedAt: 0, errno: up_last_mapping_errno())
+    /// the guest's own pointers point somewhere unintended. (`MAP_FIXED` would make the address come
+    /// true by discarding whatever is already mapped there — the runtime never wants that, and on Apple
+    /// silicon it could not reach the reserved low region anyway.)
+    ///
+    /// A *biased* placement therefore has a fallback: the next candidate bias. A hint that is refused is
+    /// not a failure of the plan, it is information about the address space, and the addresses to try
+    /// come from `ImagePlacementPlanner` so the alignment rule is applied in one tested place. An
+    /// identity placement has exactly one address — the image was linked there and cannot move — so a
+    /// refusal ends the run.
+    private func mapImage(
+        image: ELFImage,
+        placement: ImagePlacement,
+        geometry: PageGeometry
+    ) throws -> (bias: UInt64, lowest: UInt64, highest: UInt64, mechanism: String) {
+        let segments = image.loadSegments
+        guard let lowestVirtual = segments.map(\.virtualAddress).min(),
+            let highestVirtual = segments.map({ $0.virtualAddress + $0.memorySize }).max()
+        else {
+            throw RunError.cannotReadImage("the image has no PT_LOAD segments")
         }
-        guard landed == address else {
+        let alignment = max(segments.map(\.alignment).max() ?? 1, 1)
+        let planner = ImagePlacementPlanner()
+
+        var candidates = placement.bias == 0
+            ? [UInt64(0)]
+            : planner.biasCandidates(
+                lowest: lowestVirtual, atOrAbove: placement.bias, alignment: alignment)
+        var attempts: [String] = []
+        var index = 0
+        while index < candidates.count {
+            let bias = candidates[index]
+            index += 1
+            let lowest = geometry.roundDownToHostPage(lowestVirtual + bias)
+            let highest = geometry.roundUpToHostPage(highestVirtual + bias)
+            let length = Int(highest - lowest)
+            var landed: UInt64 = 0
+            guard up_reserve(lowest, length, Int32(UP_RESERVE_HINT), &landed) != nil else {
+                throw RunError.cannotMapImage(
+                    address: lowest, length: UInt64(length), landedAt: 0,
+                    errno: up_last_mapping_errno())
+            }
+            if landed == lowest {
+                return (
+                    bias, lowest, highest,
+                    bias == 0 ? "identity" : "biased attempt=\(index)")
+            }
             _ = up_release(landed, Int(length))
-            throw RunError.cannotMapImage(
-                address: address, length: length, landedAt: landed, errno: up_last_mapping_errno())
+            attempts.append(
+                "asked for 0x\(String(lowest, radix: 16)), the host offered 0x\(String(landed, radix: 16))")
+
+            // A refused hint is also a free address the host just handed us: try it next, converted
+            // into a bias through the same alignment rule (and only while the list is still short, so a
+            // host that keeps suggesting the same neighbourhood cannot loop forever).
+            if candidates.count < ImagePlacementPlanner.biasAttemptCount * 2 {
+                let suggested = planner.bias(
+                    lowest: lowestVirtual, atOrAbove: landed, alignment: alignment)
+                if !candidates.contains(suggested) { candidates.append(suggested) }
+            }
         }
+        throw RunError.cannotMapImageAtAnyBias(attempts: attempts)
     }
 
     private func randomBytes(count: Int) -> Data {

@@ -596,9 +596,19 @@ is testable on Linux, where the floor does not exist:
   its message, the *same* guest run with `--skip-relocations` does **not**, and the fixed-address build
   is refused with a reason. `readelf` checks in the workflow fail the build if the toolchain ever stops
   emitting that relocation, so the test cannot quietly become vacuous.
-- Cost: the image is no longer at its link-time address, so the run reports `image_placement=biased
-  bias=0x…` and `AT_PHDR`/`AT_ENTRY` carry the bias. Anything that assumed "guest address == link-time
-  address" (including the old `.identity`-only tests) had to be re-derived from the bias.
+- A bias is a **suggestion**, and the run treats a refused hint as information rather than as a
+  failure: on `macos-15` a hint at 8 GiB was refused outright and the kernel offered 12 GiB instead
+  (the dyld shared cache and the platform's own mappings live in that neighbourhood). Because a guest
+  address must be a host address, the runner cannot accept the address the kernel offers *unless* it is
+  a valid base: it asks `ImagePlacementPlanner` for the next candidate (12 attempts, 16 GiB apart,
+  every one of them aligned and above the floor) and also converts the offered address into a candidate
+  through the same alignment rule. The run reports which attempt was honoured
+  (`image_mapping=biased attempt=2`), and if every candidate is refused the error lists every
+  "asked for 0x…, the host offered 0x…" pair.
+- Cost: the image is no longer at its link-time address, so the run reports
+  `image_placement=biased requested_bias=0x…` and `AT_PHDR`/`AT_ENTRY` carry the base that was actually
+  used. Anything that assumed "guest address == link-time address" (including the old `.identity`-only
+  tests) had to be re-derived from the bias.
 - Still open: a real Ubuntu binary is dynamically linked, so `PT_INTERP` and symbol relocations remain
   Phase 4 work. This decision is what makes *static* PIE images — and therefore the whole path to real
   programs — runnable at all.
