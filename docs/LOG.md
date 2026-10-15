@@ -92,8 +92,10 @@ what was done, what was learned, what was left unfinished.
 
 **Unfinished / next**
 
-- The `9ac42a5` baseline has all three workflows green (runs 38760464495/4565/64836, see STATUS.md).
-  This session's fixes and B3 tests are not pushed/CI-verified yet at the time of this entry.
+- The first push `800af82` made all three workflows green: tests 38765383942 (the ten new process-table
+  tests passed; all 115 total tests green), runtime-e2e 38765383979, build-ipa 38765383964. That build
+  refreshed the nightly IPA. A follow-up docs-only correction on `4918a9e` is also all green: tests
+  38766109576, runtime-e2e 38766109482, build-ipa 38766109564.
 - Next: run the B3 tests in `tests.yml`; fix the first real failure rather than weakening tests; then
   integrate clone flag validation with `SyscallDispatcher` and design the actual host pthread/guest
   stack handoff. No changes to Track A.
