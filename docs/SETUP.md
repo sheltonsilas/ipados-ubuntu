@@ -15,19 +15,23 @@ Two audiences: the **owner** (sideloads the app, needs no programming) and a **f
 3. Sideload it with whichever you already use:
    - **AltStore / SideStore / Sideloadly** — they re-sign the app with your own certificate.
    - **TrollStore** — only on the iOS versions it supports (14.0–16.6.1, 16.7 RC, 17.0).
-4. Enable **JIT** for the app before using it. Without JIT, emulation is unusably slow.
-   - Easiest: install **StikDebug** on the same device and let it attach to UbuntuPad
-     (the app must be installed with the `get-task-allow` entitlement, which our builds include).
-   - Alternative: **TrollStore** can "launch with JIT" for apps that carry `get-task-allow`.
-   - Later versions of this app will ship a built-in helper extension for this.
+4. Open UbuntuPad. The screen measures whether executable memory is available, but the only proof is
+   tapping **Run Hello from Linux** and seeing `hello from a position-independent aarch64 linux` on the
+   screen. If the run is refused or faults, enable JIT and try again:
+   - **StikDebug** attaches to a development-signed app (our IPA includes `get-task-allow`). Its exact
+     support depends on the iPadOS version; see the [JIT research note](RESEARCH/jit-and-entitlements-on-ios.md).
+   - **TrollStore** only supports the specific older iOS versions listed above; it is not a route for
+     most current iPads.
+   - The JIT label remains `notProbed` until a guest actually exits normally; an `mprotect` permission
+     result alone does not prove the CPU may execute those bytes.
 5. Launch the app. First launch downloads the Ubuntu image — expect a long wait.
 
 ### If something goes wrong
 
-Open the app's **Diagnostics** screen, take a screenshot, and paste it into a new issue at
-<https://github.com/sheltonsilas/ipados-ubuntu/issues>. The screen is designed to contain
-everything an agent needs: iOS version, device model, page size, memory limit, whether JIT is
-active, and the last error.
+Tap **Copy** on the Diagnostics screen and paste the report into a new issue at
+<https://github.com/sheltonsilas/ipados-ubuntu/issues>. It includes iOS version, device model, page
+size, memory facts, the executable-memory probe, the guest's actual output and its exit result. Please
+include whether you enabled JIT and the sideloading tool you used.
 
 ### What to tell the agent
 
@@ -135,8 +139,10 @@ table when a session learns more (with a source).
 
 ### Owner checklist (hand this to the owner, plain language)
 
-1. Open the Releases page on the iPad and download the `.ipa`.
+1. Open the Releases page on the iPad and download `UbuntuPad-unsigned.ipa` from `nightly`.
 2. Install it with your usual sideloading tool.
-3. Turn on JIT (StikDebug) for the app.
-4. Launch it and give it time on first run.
-5. If it does not work, screenshot the Diagnostics screen and open an issue.
+3. Open UbuntuPad and tap **Run Hello from Linux**. If it is refused, try enabling JIT with StikDebug,
+   then run it again.
+4. Run **Linux process stack** too; it checks the app constructed Linux `argc`/`argv`/`envp`/`auxv`.
+5. Tap **Copy** and paste the report into an issue, including the sideloading tool and whether JIT was
+   enabled. This is the first device test; until you report back, it is marked **unverified on device**.

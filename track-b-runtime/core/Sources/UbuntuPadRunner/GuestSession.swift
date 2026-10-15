@@ -17,12 +17,19 @@ final class RealGuestHost: GuestSyscallHost {
     private var space: GuestAddressSpace
     private let heapStart: UInt64
     private let heapLimit: UInt64
+    private let consoleFileDescriptor: Int32?
     private var currentBreak: UInt64
 
-    init(space: GuestAddressSpace, heapStart: UInt64, heapLimit: UInt64) {
+    init(
+        space: GuestAddressSpace,
+        heapStart: UInt64,
+        heapLimit: UInt64,
+        consoleFileDescriptor: Int32? = nil
+    ) {
         self.space = space
         self.heapStart = heapStart
         self.heapLimit = heapLimit
+        self.consoleFileDescriptor = consoleFileDescriptor
         self.currentBreak = heapStart
     }
 
@@ -55,10 +62,12 @@ final class RealGuestHost: GuestSyscallHost {
     }
 
     /// Straight to the host's file descriptor: no buffering, so the guest's output keeps its order
-    /// relative to the runner's own markers on the same descriptor.
+    /// relative to the runner's own markers on the same descriptor. In the iOS app, fd 1/2 is a pipe
+    /// whose reader runs concurrently; the CLI keeps the original stdout/stderr behavior. This hot path
+    /// is a single `write(2)` and allocates nothing inside the signal handler.
     func writeConsole(fd: Int32, buffer: UnsafeRawBufferPointer) -> Int {
         guard let base = buffer.baseAddress, buffer.count > 0 else { return 0 }
-        return write(fd, base, buffer.count)
+        return write(consoleFileDescriptor ?? fd, base, buffer.count)
     }
 
     func mapGuest(address: UInt64, length: UInt64, protection: GuestProtection) -> UInt64? {

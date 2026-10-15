@@ -13,7 +13,7 @@ of the owner. Track B is otherwise at Phase 2's end: what remains is Phase 3 (pr
 Track A is parked by the owner's decision (its blocker was `gstreamer.freedesktop.org`, not UTM's code).
 The complete Track B plan is [TRACK-B-PLAN.md](TRACK-B-PLAN.md).
 
-## Evidence — commit `3f2d878`, all three workflows green
+## Last fully green CI evidence — commit `9ac42a5`, all three workflows green (before the B3 process-table slice)
 
 | Item | State | Evidence |
 | --- | --- | --- |
@@ -38,13 +38,15 @@ iOS". Only the owner's paste of the diagnostics block closes that gap.
 
 ## What is broken / not started
 
-- **No device test of anything.** Track B's probe may well answer "refused" on an unentitled iPad; the
-  design avoids a writable-and-executable page precisely so that it has a chance, and the app measures
-  the answer instead of assuming it.
+- **No device test of anything.** The probe reports whether `mprotect(PROT_EXEC)` accepts a permission
+  change, which is not proof the CPU can execute the bytes. Only a successful guest run proves that; the
+  app now reports `jit: enabled` only after a guest completes normally. The device test is still
+  unverified and the answer may be refused on an unentitled iPad.
 - Track A is **parked**. Its last fork run (38746321359) was never read; the GStreamer pre-fetch fix is
   in `track-a-utm/ci/ubuntupad-ios.yml` and unproven.
-- Phase 3+ is not started: `fork`/`clone`/`execve`, threads, pipes, signals, a filesystem, dynamic
-  linking. The design for the process model is decision 0021; the order of work is
+- Phase 3+ is not started: `fork`/`clone`/`execve`, host threads, pipes, signals, a filesystem, dynamic
+  linking. The first portable process-table slice now models clone sharing and zombies but is not
+  integrated with the dispatcher or host threads yet; the design is decision 0021. The order of work is
   [TRACK-B-PLAN.md](TRACK-B-PLAN.md) §2.
 - A dynamically linked binary, `/proc`, `/dev`, pty, sockets, epoll, futex and timers are all still
   `ENOSYS`, and the run's `unimplemented=` line is the list to work from.
@@ -85,12 +87,11 @@ iOS". Only the owner's paste of the diagnostics block closes that gap.
 ## Next tasks (in order)
 
 1. **The owner's device report.** Give them the four-step checklist (install the nightly IPA, enable JIT,
-   press Run on both programs, paste the diagnostics block into an issue). Every "unverified on device"
-   line in this file turns into either evidence or a bug report, and the probe's `rx_mapping=` decides
-   how much of Phase 5 is possible.
-2. **B3, first slice:** the guest process table in the portable core — one guest task per host thread,
-   `clone` flags classified rather than forwarded, `wait` state, per-task signal masks — with unit tests
-   for the flag combinations that matter (decision 0021 designs it).
+   press Run on both programs, paste the diagnostics block into an issue). The probe is only a permission
+   measurement; an actual successful guest run proves execution on device, and remains unverified.
+2. **B3, continue:** connect `GuestProcessTable` to clone syscall validation, then implement host-thread
+   startup and address-space-copy plumbing. The table currently models the policy and zombie lifetime;
+   it does not yet create host pthreads or copy memory (decision 0021).
 3. **B3, second slice:** `clone`/`fork`/`wait4` services plus pipes, and a fork-and-pipe guest added to
    `tools/build-guest-binaries.sh` and asserted in `runtime-e2e`.
 4. **B4:** a static busybox from a pinned, checksummed release, running `sh -c` with pipes and

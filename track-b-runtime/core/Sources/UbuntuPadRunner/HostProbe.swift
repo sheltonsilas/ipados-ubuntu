@@ -57,13 +57,16 @@ public struct HostProbe {
         return lines
     }
 
-    /// One sentence a non-programmer can act on, for the app's screen.
+    /// One sentence a non-programmer can act on, for the app's screen. An RX protection change is only
+    /// a permission probe: it is not proof the kernel will let the CPU execute these bytes. Only a
+    /// successful guest run proves that, and the app reports it separately after the run.
     public var summary: String {
-        if !canRunGuest { return "this device cannot run AArch64 guest code" }
-        if readExecuteMapping == "ok" {
-            return "this device allows executable code written by the app"
+        if !canRunGuest { return "this CPU cannot run the arm64 guest" }
+        switch readExecuteMapping {
+        case "ok": return "the system accepted a read+execute memory mapping (guest execution not yet proven)"
+        case "failed": return "the system refused a read+execute memory mapping"
+        default: return "read+execute memory could not be measured"
         }
-        return "this device refuses to execute code the app wrote (JIT is not enabled for it)"
     }
 }
 

@@ -1,4 +1,5 @@
 import Combine
+import Darwin
 import Foundation
 import UbuntuPadCore
 import UbuntuPadRunner
@@ -60,7 +61,16 @@ final class GuestRunModel: ObservableObject {
     /// Whether this device lets the app execute code it wrote. On Apple platforms this is what the
     /// JIT/executable-memory question reduces to, and it is measured rather than assumed.
     var jitStatus: JITStatus {
-        probe.readExecuteMapping == "ok" ? .enabled : .disabled
+        guard probe.canRunGuest else { return .notProbed }
+        switch probe.readExecuteMapping {
+        case "failed": return .disabled
+        case "ok":
+            // mprotect accepting PROT_EXEC only measures a permission change. It does not prove that
+            // the CPU may execute those bytes. The only positive evidence is a guest that completed
+            // successfully through this runner.
+            return outcome?.contains("exit=normal status=0") == true ? .enabled : .notProbed
+        default: return .notProbed
+        }
     }
 
     func run(_ program: Program) {
@@ -79,12 +89,38 @@ final class GuestRunModel: ObservableObject {
         // faults must not take the user interface with it.
         DispatchQueue.global(qos: .userInitiated).async {
             var lines: [String] = []
+            var descriptors: [Int32] = [0, 0]
+            guard pipe(&descriptors) == 0 else {
+                DispatchQueue.main.async {
+                    self.outcome = "could not create the guest output pipe"
+                    self.state = .finished
+                }
+                return
+            }
+            let readerFD = descriptors[0]
+            let writerFD = descriptors[1]
+            // Read concurrently: a guest that writes more than the pipe capacity must not deadlock in
+            // its SIGTRAP handler. Keep this transport off the main queue, which remains responsive.
+            let readerQueue = DispatchQueue(label: "dev.sheltonsilas.UbuntuPad.guest-output")
+            readerQueue.async {
+                var buffer = [UInt8](repeating: 0, count: 4096)
+                while true {
+                    let count = buffer.withUnsafeMutableBytes { raw in
+                        read(readerFD, raw.baseAddress, raw.count)
+                    }
+                    if count <= 0 { break }
+                    let chunk = String(decoding: buffer.prefix(count), as: UTF8.self)
+                    DispatchQueue.main.async { self.output.append(chunk) }
+                }
+                close(readerFD)
+            }
             let runner = GuestRunner(
                 options: GuestRunner.Options(
                     executablePath: path,
                     arguments: arguments,
                     environment: ["PATH=/usr/bin:/bin", "HOME=/root", "TERM=dumb", "LC_ALL=C"],
-                    verbose: true),
+                    verbose: true,
+                    consoleFileDescriptor: writerFD),
                 emit: { lines.append($0) })
 
             let summary: String
@@ -96,9 +132,14 @@ final class GuestRunModel: ObservableObject {
                 summary = "refused: \(error)"
             }
 
+            close(writerFD)
+            // Closing the writer lets the reader observe EOF. Wait for its final chunk to be queued
+            // before appending runner diagnostics and marking the run complete.
+            readerQueue.sync {}
+
             let collected = lines
             DispatchQueue.main.async {
-                self.output = collected
+                self.output.append(contentsOf: collected)
                 self.outcome = summary
                 self.state = .finished
             }

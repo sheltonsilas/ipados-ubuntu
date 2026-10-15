@@ -60,6 +60,46 @@ what was done, what was learned, what was left unfinished.
   classified, `fork`/`wait4`/pipes next, then a shell.
 
 ---
+
+## 2026-10-15 — Session 5: app output capture and the first B3 process-table slice
+
+**Done**
+
+- Fixed the proof boundary in the app: the `mprotect(PROT_EXEC)` probe says only "the system accepted
+  a read+execute mapping" and the copyable diagnostics leave JIT as `notProbed` until a guest really
+  completes. A normal guest exit changes that to `enabled`; a refused protection change stays
+  `disabled`. Permission and execution are no longer conflated.
+- Routed guest fd 1/2 through a pipe in the app, read concurrently on a background queue, so the guest's
+  actual `write()` output is visible in the screen. The reader runs while the guest runs (otherwise a
+  full pipe would deadlock inside the SIGTRAP handler); runner diagnostics append after EOF.
+- Started B3 with `UbuntuPadCore.GuestProcessTable`: deterministic Linux task IDs; modeled clone resource
+  sharing (`CLONE_VM`, `CLONE_FILES`, `CLONE_FS`, `CLONE_SIGHAND`, `CLONE_THREAD`, `CLONE_SETTLS`);
+  Linux flag dependency checks; copied signal masks and empty pending sets; exit status, zombie retention
+  and parent-only reaping. Ten unit tests assert the rules. This is the **policy slice only**: no host
+  pthread creation, syscall dispatcher integration or address-space copying is claimed yet.
+- Locally: `tools/check-layout.sh` passes; all three workflow YAML files parse; the four shell scripts
+  pass `bash -n`. `swift test` could not run locally (`swift: command not found`); tests are dispatched to
+  the Linux CI runner.
+
+**Learned**
+
+- `mprotect(PROT_EXEC)` is a permission change; the CPU's permission to actually execute those bytes is
+  a separate question (Apple's XNU code-signing path can stop execution after a successful mapping
+  change). So the app now makes no positive claim until it has actually run a guest successfully.
+- Capturing guest stdout must be concurrent with execution. `write()` runs inside the signal handler; a
+  blocked write to a full pipe would deadlock the entire guest, so the iOS pipe reader must always be
+  live before `GuestRunner.run()` begins.
+
+**Unfinished / next**
+
+- The `9ac42a5` baseline has all three workflows green (runs 38760464495/4565/64836, see STATUS.md).
+  This session's fixes and B3 tests are not pushed/CI-verified yet at the time of this entry.
+- Next: run the B3 tests in `tests.yml`; fix the first real failure rather than weakening tests; then
+  integrate clone flag validation with `SyscallDispatcher` and design the actual host pthread/guest
+  stack handoff. No changes to Track A.
+
+---
+
 ## 2026-10-15 — Session 3: the low 4 GiB is a kernel rule, so guest images are placed and relocated
 
 **Done**

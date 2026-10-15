@@ -28,6 +28,8 @@ required_files=(
   track-a-utm/tools/push-fork-ci.sh
   track-b-runtime/README.md
   track-b-runtime/core/Package.swift
+  track-b-runtime/core/Sources/UbuntuPadCore/GuestProcessTable.swift
+  track-b-runtime/core/Tests/UbuntuPadCoreTests/GuestProcessTableTests.swift
   track-b-runtime/ios/project.yml
   track-b-runtime/runner-entitlements.plist
   track-b-runtime/testdata/hello-nostdlib.c

@@ -44,9 +44,11 @@ An iOS app cannot create processes, so every Linux process lives **inside** the 
   core. A guest task is one host **pthread**; the guest's CPU state is that thread's own registers
   (we execute natively, so there is no interpreter state to save). Each guest task owns a
   `GuestAddressSpace`; tasks in one `CLONE_VM` group share it.
-- **`clone`** is modelled, not forwarded: `CLONE_VM`/`CLONE_THREAD` share the address space and the fd
-  table and start a pthread; without `CLONE_VM` the child gets a **copy** of the parent's address
-  space (see 1.3 — with native execution there is no lazy copy-on-write to be had).
+- **`clone`** is modelled, not forwarded: `CLONE_VM` shares the address space, `CLONE_FILES` shares the
+  fd table, `CLONE_FS` shares cwd/root, and `CLONE_SIGHAND` shares dispositions (with Linux's required
+  flag dependencies validated); `CLONE_THREAD` joins the thread group. A host pthread starts the child.
+  Without `CLONE_VM` the child gets a **copy** of the parent's address space (see 1.3 — with native
+  execution there is no lazy copy-on-write to be had).
 - **`fork` is `clone` without `CLONE_VM`**, exactly as iSH does it: only the calling thread survives
   into the child, pending signals start empty, and the child's PID differs.
 - **`fork` + `execve`** is special-cased: the child builds the new image, stack and auxv *before*
@@ -160,10 +162,12 @@ userland that cannot `fork` or `open` a file is a screenshot, not a system.
 
 ## 3. The next five tasks (kept in step with STATUS.md)
 
-1. **B2, device half:** ship the app with the run button and the memory probe, give the owner the
-   four-step checklist (install, enable JIT, tap Run, paste the diagnostics block into an issue).
-2. **B3, first slice:** the guest process table and `pthread`-backed tasks in the portable core, with
-   unit tests for the flags that matter (`CLONE_VM`, `CLONE_THREAD`, `CLONE_SETTLS`, `CLONE_FILES`).
+1. **B2, device half:** the app has the run button and memory probe; the owner still needs the
+   four-step checklist (install, enable JIT, tap Run on both programs, paste the diagnostics block into
+   an issue). The probe is permission-only: only a successful guest run proves execution on device.
+2. **B3, continue:** connect the portable task table to clone syscall validation, then add host pthread
+   creation and address-space-copy plumbing. `GuestProcessTable` is the first tested slice: it models
+   resource sharing and zombies, but does not claim to create threads or copy mapped pages yet.
 3. **B3, second slice:** `clone`/`fork`/`wait4` services plus pipes, and the fork-and-pipe guest in
    `runtime-e2e`.
 4. **B4:** static busybox from a pinned, checksummed release, run `sh -c` in CI.

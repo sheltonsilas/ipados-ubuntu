@@ -38,7 +38,10 @@ public final class GuestRunner {
         public var arguments: [String]
         public var environment: [String]
         public var stackSize: Int
-        public var verbose: Bool
+        public        var verbose: Bool
+        /// Where guest writes to fd 1 and 2 go. The CLI leaves this nil (same descriptors as the runner);
+        /// the app passes a pipe so it can show the guest's output on screen.
+        public var consoleFileDescriptor: Int32?
         /// Test-only escape hatch: run without the relocation pass, so CI can show that a
         /// position-independent guest *needs* it (the run then faults instead of printing its message).
         public var skipRelocations: Bool
@@ -49,6 +52,7 @@ public final class GuestRunner {
             environment: [String],
             stackSize: Int = 1 << 20,
             verbose: Bool = false,
+            consoleFileDescriptor: Int32? = nil,
             skipRelocations: Bool = false
         ) {
             self.executablePath = executablePath
@@ -56,6 +60,7 @@ public final class GuestRunner {
             self.environment = environment
             self.stackSize = stackSize
             self.verbose = verbose
+            self.consoleFileDescriptor = consoleFileDescriptor
             self.skipRelocations = skipRelocations
         }
     }
@@ -311,7 +316,11 @@ public final class GuestRunner {
         }
 
         // --- 7. run
-        let host = RealGuestHost(space: space, heapStart: heapStart, heapLimit: heapLimit)
+        let host = RealGuestHost(
+            space: space,
+            heapStart: heapStart,
+            heapLimit: heapLimit,
+            consoleFileDescriptor: options.consoleFileDescriptor)
         let dispatcher = SyscallDispatcher.standardPhase2()
         let session = GuestSession(dispatcher: dispatcher, host: host)
         up_set_syscall_handler(GuestSession.syscallTrampoline, Unmanaged.passUnretained(session).toOpaque())
