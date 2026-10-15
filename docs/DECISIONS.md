@@ -246,3 +246,267 @@ build red for reasons unrelated to this project.
 **Consequences.** When a new image is worth adopting (for example an Xcode or Swift version we
 want), that is an explicit commit. If `ubuntu-24.04` is ever retired, the fix is a one-line change
 plus a note here and in `docs/STATUS.md`.
+
+---
+
+## 0010 — Track B executes guest code on an Apple-silicon runner, not in an emulator on Linux
+
+**Date:** 2026-10-15 · **Status:** accepted, phase 2
+
+**Context.** Track B's reason to exist is running a Linux arm64 binary *natively on the iPad's CPU*.
+A test that runs that binary inside an emulator on an x86_64 Linux runner would prove nothing about
+the design that actually ships.
+
+**Options.**
+
+1. Test only on the iPad. Slowest possible loop, and nothing is verifiable in CI at all.
+2. Run the guest under QEMU user-mode on the Linux runner. Cheap, but it tests QEMU, not our trap
+   handler, our page-size bridging or our entitlements story.
+3. **Run the guest natively on a `macos-15` GitHub runner.** Same architecture (arm64), same 16 KiB
+   pages, same code-signing rules and the same kernel as the iPad. The only difference is that the
+   runner is not sandboxed like an iOS app.
+
+**Choice:** option 3. Guest binaries are cross-compiled cheaply on `ubuntu-24.04` (no toolchain
+bloat in the macOS job) and handed over as a build artifact; `runtime-e2e.yml` runs them and asserts
+stdout between explicit markers.
+
+**Consequences.**
+
+- The 16 KiB page size is exercised for real, not simulated: the CI job fails if the host does not
+  report 16384-byte pages, because that condition is the point of the test.
+- macOS runners are slower and metered, so the heavy cross-compilation stays on Linux.
+- What this still does **not** prove: iOS sandbox behaviour (JIT, entitlements, memory limits). Those
+  stay marked *unverified on device* until the owner reports from the iPad, as AGENTS.md requires.
+
+---
+
+## 0011 — Identity mapping: a guest virtual address *is* a host virtual address
+
+**Date:** 2026-10-15 · **Status:** accepted, phase 2
+
+**Context.** A Linux executable is linked for specific virtual addresses (0x400000 for a classic
+ET_EXEC). The guest dereferences raw pointers: `write(1, 0x400123, 13)` passes an address, and the
+address has to mean the same thing to guest and runtime, or every pointer the guest computes has to
+be translated.
+
+**Options.**
+
+1. **Identity mapping**: map the image at exactly its link-time addresses. Guest pointers are host
+   pointers; the syscall services can validate and use them directly. Requires the addresses to be
+   free in the host process.
+2. A separate guest address space with translation on every access. Correct for arbitrary guest
+   addresses, but every guest memory access inside the runtime needs a translation step, and guest
+   code that computes pointers (all of it) still needs link-time addresses to be valid *somewhere*.
+3. Relocate the image to a free base. An ET_EXEC has no relocation information, so this means
+   rewriting absolute addresses — not possible in general.
+
+**Choice:** option 1, with the address-space model still recording regions and protections so that
+option 2 can be layered underneath later without redesigning the callers.
+
+**Consequences.**
+
+- The loader must *verify* that the mapping landed at the requested address and refuse to run
+  otherwise; a silently relocated image would take wild pointers (see decision 0015 for the one
+  case where the fix is a link-time flag rather than a relocation).
+- Guest `mmap` returns real host addresses, so guest and host views stay identical.
+- ET_DYN (PIE) images need a load bias before they can be mapped this way; `InitialStackBuilder`
+  already takes `loadBias` so the change is localised, and the loader refuses a PIE image today with
+  a message that says so.
+
+---
+
+## 0012 — Syscall capture: rewrite `svc #0` to a breakpoint and handle SIGTRAP
+
+**Date:** 2026-10-15 · **Status:** accepted, phase 2 — resolves the mechanism half of decision 0008
+
+**Context.** On Darwin a guest `svc #0` is not a Linux syscall: it enters the Darwin kernel, which
+interprets it with Darwin's own numbering (taken from x16). Every one of them must be intercepted
+before the guest runs. Decision 0008 left the mechanism open and listed three families
+(interpretation, load-time rewriting, a patched libc).
+
+**Options, within load-time rewriting.**
+
+1. Replace each `svc` with a **branch to a generated trampoline** that saves registers, calls Swift,
+   restores them and returns. Documented precedent (`svc-hook`). Needs writable *and* executable
+   pages to place the trampolines, and `b` only reaches ±128 MiB, so a trampoline island has to be
+   allocated near the guest image.
+2. Replace each `svc` with **`brk #0x123`** and handle `SIGTRAP`: the signal context *contains* the
+   full register file, so no trampoline, no code generation and no W+X mapping is needed. The
+   handler reads x8 and x0-x5 from the context, services the syscall, writes x0, advances the
+   program counter past the breakpoint and returns.
+3. `ptrace`/debugserver, or a Mach exception port. Either needs a debugger relationship or a
+   privileged port; no evidence that an ordinary iOS app can rely on it (see
+   `docs/RESEARCH/syscall-translation-prior-art.md`).
+
+**Choice:** option 2.
+
+**Consequences.**
+
+- The text is written while the image is still writable and is made executable afterwards, so the
+  process never holds a writable-and-executable page. That is what keeps the design viable on a
+  non-jailbroken iOS device (see `docs/RESEARCH/jit-and-entitlements-on-ios.md`), and the runner's
+  `probe` mode reports the kernel's answer instead of assuming it.
+- Instruments compiled by a future session must not use `brk #0x123`: the handler distinguishes "our"
+  syscall trap from a guest breakpoint by the instruction word at the program counter, and a genuine
+  `brk` ends the run with `exit=breakpoint`. The sentinel is pinned by a unit test.
+- Code the guest generates at runtime is not patched, so a JIT inside the guest (or a self-modifying
+  program) would make a Darwin syscall instead. That is a documented Phase 2 non-goal; a guest that
+  does it fails at the first dynamic `svc`.
+- This does not resolve the *dynamic* half of decision 0008: a dynamically linked Ubuntu program still
+  needs a loader (Phase 4), and a patched libc may still be the better answer for it.
+
+---
+
+## 0013 — `macos-15` is pinned for the guest-execution job too
+
+**Date:** 2026-10-15 · **Status:** accepted, phase 2
+
+**Context.** `runtime-e2e.yml` depends on two properties of the runner that must not change silently:
+arm64 and **16384-byte pages**. Decision 0009 pinned the Linux image for the same class of reason.
+
+**Choice:** `runs-on: macos-15`, and the job asserts `uname -m` is `arm64` and that the host reports
+16384-byte pages. If the runner ever stops being arm64 or stops using 16 KiB pages, the job fails
+loudly with a message that names the assumption rather than quietly passing a weaker test.
+
+**Consequences.** A future image upgrade is an explicit commit. `macos-15` is also what UTM's iOS
+sysroot is built on (decision 0017), so the two macOS jobs are pinned together on purpose.
+
+---
+
+## 0014 — Build workarounds in the fork are recorded, not left in the workflow
+
+**Date:** 2026-10-15 · **Status:** accepted, phase 1
+
+**Context.** The first UTM fork run failed for an infrastructure reason, not a code reason:
+`gstreamer.freedesktop.org` closes HTTP/2 streams mid-download from GitHub's macOS runners, so curl
+exits 92 and UTM's dependency script gives up after five retries.
+
+**Choice:** write `~/.curlrc` with `http1.1` before the dependency build. Every other download in the
+build keeps working, upstream's script is untouched, and the reason is written down next to the step
+that does it.
+
+**Consequences.** A future session that sees "curl 92" in this pipeline can find this entry instead
+of re-diagnosing it. If upstream fixes the download (or switches mirror), the workaround can be
+removed — with a new decision entry saying so.
+
+---
+
+## 0015 — The guest runner is linked with a 64 KiB `__PAGEZERO`
+
+**Date:** 2026-10-15 · **Status:** accepted, phase 2
+
+**Context.** Every arm64 macOS process reserves a **4 GiB** `__PAGEZERO` at the bottom of its address
+space. A Linux executable is linked at 0x400000 — inside that reservation — so with identity mapping
+(decision 0011) the image could not be mapped at its own addresses and the runner refused to start.
+This is a genuine, load-bearing platform fact, not a detail.
+
+**Options.**
+
+1. Relocate the guest (impossible for ET_EXEC without relocation info).
+2. Change the guest's link address (only possible for programs we build; real Ubuntu binaries are
+   linked at 0x400000, so this would test something that never ships).
+3. Map over the reservation with `MAP_FIXED` (discards whatever is there; only safe because the
+   reservation is the running binary's own, and never holds live data).
+4. **Link the runner itself with `-pagezero_size 0x10000`**, shrinking its own reservation to 64 KiB
+   so the low 4 GiB is ordinary mappable memory. 64 KiB is still enough to catch a null dereference.
+
+**Choice:** option 4 as the primary mechanism, option 3 kept as an explicit fallback.
+
+**Consequences.**
+
+- The load path is: try a plain hint; if it lands elsewhere, check that the whole image fits inside
+  the host's reserved region (read from the loaded Mach-O header, not assumed) and *only then* use
+  `MAP_FIXED`. Anything else fails loudly with an error naming the address, the errno and the flag.
+- The run output says which mechanism was used (`image_mapping=hint` or
+  `image_mapping=replace-reserved-low-region`) and the probe prints the reservation size, so the
+  fallback can never be silent.
+- `-pagezero_size` reaches the linker through SwiftPM `unsafeFlags`, which is only permitted for a
+  root package. This package is therefore not usable as a dependency; acceptable, and reversible.
+
+---
+
+## 0016 — The guest runner is an executable target, not an XCTest bundle
+
+**Date:** 2026-10-15 · **Status:** accepted, phase 2
+
+**Context.** The end-to-end run needs to execute guest code. On macOS that requires the process to have
+the JIT/executable-memory entitlements *if* the kernel refuses an executable mapping (decision 0012
+expects it not to).
+
+**Options.**
+
+1. Run the guest inside `swift test`. Simple, but on macOS the test bundle is loaded by the `xctest`
+   binary, so entitlements would have to be applied to that binary — not something a repository can own.
+2. **Build a small executable (`ubuntupad-run`) in the same package and run it from CI**, with the
+   entitlements fallback in decision 0015's plist. The executable can be signed (or re-signed) by the
+   workflow, and its output format can be asserted byte for byte.
+3. An iOS app only. No CI verification at all.
+
+**Choice:** option 2. Every *pure* part of the runtime stays a unit test in `swift test` (ELF parsing,
+address-space arithmetic, stack layout, syscall policy); only the part that needs real memory and real
+traps moves into the executable.
+
+**Consequences.** Two test entry points to keep in step, and the unit tests must not grow a dependency
+on the executable. In exchange, the syscall *policy* is fully tested on a free Linux runner, and the
+mechanism is tested once, on the platform that matters.
+
+---
+
+## 0017 — Track A lives in a fork; this repository holds the build definition
+
+**Date:** 2026-10-15 · **Status:** accepted, phase 1
+
+**Context.** Phase 1 needs UTM's iOS target built as an unsigned IPA in CI. UTM's own build workflow
+is a large matrix over nine sysroots plus macOS and visionOS apps; running it as-is would burn hours
+per attempt on things this project does not ship. QEMU must not be vendored into this repository
+(decision 0001), so a git subtree of UTM was never an option either.
+
+**Options.**
+
+1. Vendor UTM into `track-a-utm/`. Hundreds of megabytes, and the QEMU sources would have to be
+   committed.
+2. Use upstream's workflow unchanged via `workflow_dispatch` in a fork. Runs the nine-sysroot matrix
+   for one product.
+3. **Fork UTM into the owner's account and add one trimmed iOS-only workflow to the fork**, keeping the
+   definition of that workflow in this repository (`track-a-utm/ci/ubuntupad-ios.yml`) and pushing it
+   with a script (`track-a-utm/tools/push-fork-ci.sh`).
+
+**Choice:** option 3.
+
+**Consequences.**
+
+- Two repositories, one of which (the fork) is only ever touched by that script; a future session can
+  reproduce the fork's CI from this repository alone.
+- The fork's CI publishes to a rolling `ios-nightly` release using its own `GITHUB_TOKEN`, and this
+  repository's CI can consume that public asset anonymously. A cross-repository `workflow_dispatch`
+  would need a personal access token, which the project forbids, so the fork is triggered by hand (or
+  by a push to its `ubuntupad-ci` branch) instead.
+- The sysroot is cached and uploaded as an artifact in the fork, because rebuilding QEMU for iOS from
+  source is the expensive part of the build.
+
+---
+
+## 0018 — On a 16 KiB host, a guest page gets the **union** of its regions' protections
+
+**Date:** 2026-10-15 · **Status:** accepted, phase 2
+
+**Context.** Apple silicon has 16 KiB pages; a Linux guest is linked for 4 KiB pages. Two guest
+segments with different protections (read-only `.rodata` and read-write `.data`, or text and data if
+the linker packs them tightly) can therefore land in one host page, and the host can only protect whole
+pages.
+
+**Options.**
+
+1. Refuse the protection change (EACCES/EINVAL). Breaks legitimate programs for a property they cannot
+   see.
+2. Narrow: give the page the *intersection* of the rights. Silently un-maps or un-executes something
+   the guest needs.
+3. **Widen: give the page the union** of the rights, and report that the merge happened.
+
+**Choice:** option 3, in `GuestAddressSpace.hostPageProtectionPlan()`. Widening is what Linux itself
+does with a sub-page range, and it is the only option that cannot break a correct guest.
+
+**Consequences.** A read-only guest page can share a host page with a writable one, so the hardware
+protection is coarser than the guest believes. That is a documented consequence of 16 KiB pages on Apple
+silicon (not of this implementation), and it is visible: the run output reports `merged_pages=N`, and a
+unit test asserts both the merge (16 KiB) and the absence of a merge (4 KiB).

@@ -15,7 +15,7 @@ under, so the license obligations are known before we depend on it.
 
 | Component | Used for | License | Notes |
 | --- | --- | --- | --- |
-| [UTM](https://github.com/utmapp/UTM) | Track A: iOS VM host app (upstream of our fork) | Apache-2.0 | Forked into `track-a-utm/`; upstream headers and `LICENSE` are kept intact |
+| [UTM](https://github.com/utmapp/UTM) | Track A: iOS VM host app (upstream of our fork) | Apache-2.0 | Upstream is forked to <https://github.com/sheltonsilas/UTM> and built there; **no UTM source is vendored into this repository**, which holds only the build definition, the VM preset and the documentation for it. Upstream headers and `LICENSE` stay intact in the fork (decision 0017) |
 | [QEMU](https://www.qemu.org/) | Track A: emulation backend used by UTM | GPL-2.0 (most files; some files are GPL-2.0-or-later or other licenses) | Built from upstream submodules at build time, not vendored here. Distributing an IPA that links QEMU makes that distribution subject to GPL-2.0 |
 | [Ubuntu](https://ubuntu.com/) base image / cloud image | Guest root filesystem | Mixed free licenses (GPL, LGPL, MIT, BSD, and others) | Downloaded by the user at first run from Ubuntu's official servers; never committed to this repo |
 | [XFCE](https://xfce.org/) / [LXQt](https://lxqt-project.org/) | Lightweight guest desktop | GPL/LGPL (XFCE: mostly GPL-2.0-or-later; LXQt: LGPL-2.1-or-later) | Installed inside the guest image, not linked into the app |
@@ -36,4 +36,11 @@ under, so the license obligations are known before we depend on it.
 - Do not relicense upstream code. Our GPL-2.0-or-later applies to files we wrote.
 - Keep this file updated in the same commit that introduces a new dependency.
 
-_Last reviewed: 2026-10-14 (Phase 0)._
+## Track B dependencies
+
+Track B links no third-party code at all: it is our own Swift plus a small C shim that calls `mmap`,
+`sigaction` and `mmap`-style primitives from the operating system. The guest programs it runs in CI
+are compiled from our own sources in `track-b-runtime/testdata/` with `gcc-aarch64-linux-gnu`
+(GPL-3.0-or-later with the GCC Runtime Library Exception), and are built in CI, never committed.
+
+_Last reviewed: 2026-10-15 (Phase 1/2)._

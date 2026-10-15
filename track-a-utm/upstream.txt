@@ -1,0 +1,23 @@
+# Track A upstream pin
+#
+# The fork that builds the Track A app, and the exact upstream revision it started from. This is the
+# corresponding-source pointer for any IPA built from it (GPL-2.0 / Apache-2.0 obligations).
+#
+# Fork:            https://github.com/sheltonsilas/UTM
+# Upstream:        https://github.com/utmapp/UTM
+# Upstream license: Apache-2.0  (QEMU, built from source at build time, is GPL-2.0 — see LICENSES.md)
+#
+# upstream-commit: 7928d11c2df2813c84306769fd318c1258a5c6bd
+# upstream-date:   2026-10-15
+# upstream-subject: Merge pull request #7962 from utmapp/fix/usb-capture-unsupported
+#
+# The fork's `main` is this commit plus exactly one added file, the workflow that lives in this
+# repository at track-a-utm/ci/ubuntupad-ios.yml and is pushed there by
+# track-a-utm/tools/push-fork-ci.sh. If the fork's main gains anything else, that is a change worth
+# noticing: re-check this file when you next run the script.
+#
+# To move the pin deliberately:
+#   1. fetch upstream, note the new commit and what changed in scripts/ or UTM.xcodeproj;
+#   2. fast-forward the fork's main to it (never force-push);
+#   3. update this file in the same commit;
+#   4. re-run the fork workflow and only then record a result in docs/STATUS.md.

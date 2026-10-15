@@ -76,12 +76,25 @@ docs/DECISIONS.md       numbered decisions: context, options, choice, consequenc
 docs/LOG.md             dated session log, newest first
 docs/SETUP.md           token renewal, sideloading, JIT, owner checklist
 docs/RESEARCH/          prior-art notes (read before designing)
-track-a-utm/            UTM fork and VM definition for the baseline app
+track-a-utm/            Track A: the pinned UTM fork, its CI definition and the VM preset
 track-b-runtime/core/   platform-independent Swift package (builds on Linux)
 track-b-runtime/ios/    SwiftUI shell, XcodeGen spec, entitlements
-tools/                  repository checks used by CI
-.github/workflows/      CI: build-ipa (macos-15), tests (ubuntu-latest)
+tools/                  repository checks and the guest-run assertions used by CI
+.github/workflows/      CI: build-ipa (macos-15), tests (ubuntu-24.04), runtime-e2e (macos-15)
 ```
+
+## The three pipelines
+
+| Workflow | Runner | What it proves |
+| --- | --- | --- |
+| `build-ipa.yml` | macos-15 | the Phase 0 iOS app builds, packages and publishes as an unsigned IPA |
+| `tests.yml` | ubuntu-24.04 | the portable core's unit tests, the real-binary loader checks, and repository hygiene |
+| `runtime-e2e.yml` | ubuntu-24.04 + **macos-15** | a static AArch64 **Linux** guest program is cross-compiled, then executed natively on Apple silicon and its stdout is asserted byte for byte |
+
+Track A's own build runs in the **fork**, not here: `track-a-utm/ci/ubuntupad-ios.yml` is the source
+of truth and `track-a-utm/tools/push-fork-ci.sh` pushes it there (decision 0017). Everything about
+that pipeline — including why it cannot be triggered from this repository's CI — is in
+[track-a-utm/README.md](track-a-utm/README.md).
 
 ## How to work a session
 
@@ -95,6 +108,11 @@ tools/                  repository checks used by CI
 
 ## Known environment limits (as of the last session)
 
-- The agent machine is Windows with Git Bash. `xcodebuild` and `swift` are **not** available
-  locally, so iOS builds and Swift core tests are validated only in CI.
+- The agent machine is Windows with Git Bash. `xcodebuild`, `swift` and `aarch64-linux-gnu-gcc` are
+  **not** available locally, so iOS builds, Swift compilation and every guest-execution result are
+  validated only in CI. A local `python3` with `pyyaml` is available and is worth using to lint the
+  workflows before pushing; `tools/check-layout.sh` does the same on the runner.
 - A browser is available for GitHub web operations; the owner is signed in there.
+- Track A builds in the fork (`sheltonsilas/UTM`) and its CI takes tens of minutes because it
+  compiles QEMU for iOS from source. Start it early in a session and do something else while it runs;
+  do not assume a failure is a code problem before reading the log.

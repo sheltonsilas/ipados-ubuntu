@@ -1,0 +1,212 @@
+# UbuntuPad iOS build workflow — trimmed fork of UTM's own .github/workflows/build.yml.
+#
+# This file is the SOURCE OF TRUTH in the UbuntuPad repository. It is pushed verbatim into the fork
+# (https://github.com/sheltonsilas/UTM) by track-a-utm/tools/push-fork-ci.sh. Keep the two in step;
+# a future agent must be able to reproduce the fork's CI from this file alone.
+#
+# Why a trimmed copy instead of upstream's workflow: upstream's matrix builds nine sysroots
+# (ios, ios_simulator, ios-tci, ios_simulator-tci, macos, visionos, visionos_simulator, visionos-tci,
+# visionos_simulator-tci) plus macOS/visionOS apps. We need exactly one: ios/arm64, packaged as an
+# unsigned IPA. Building the rest would waste hours of runner time per attempt.
+#
+# Everything below is upstream's own recipe (brew packages, bison PATH, build_dependencies.sh,
+# build_utm.sh, package.sh) with the matrix removed. No Apple credentials are used anywhere.
+
+name: UbuntuPad iOS
+
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: 'Dependency platform (build_dependencies.sh -p)'
+        required: true
+        default: 'ios'
+      scheme:
+        description: 'Xcode scheme (build_utm.sh -s)'
+        required: true
+        default: 'iOS'
+      package_mode:
+        description: 'package.sh mode: ipa | ipa-hv | ipa-se'
+        required: true
+        default: 'ipa'
+      runner:
+        description: 'GitHub-hosted runner label'
+        required: true
+        default: 'macos-15'
+  push:
+    branches:
+      - ubuntupad-ci
+    paths:
+      - '.github/workflows/ubuntupad-ios.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  sysroot:
+    name: Build iOS arm64 sysroot
+    # macos-15 is pinned deliberately: upstream defaults to macos-26, and a silent image change
+    # would change the Xcode version under us (same reasoning as UbuntuPad decision 0009).
+    runs-on: ${{ inputs.runner || 'macos-15' }}
+    timeout-minutes: 330
+    env:
+      PLATFORM: ${{ inputs.platform || 'ios' }}
+      ARCH: arm64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Report toolchain and disk
+        run: |
+          xcodebuild -version
+          df -h /
+          sysctl -n hw.ncpu
+          sysctl -n hw.memsize
+
+      - name: Restore cached sysroot
+        id: cache-sysroot
+        uses: actions/cache/restore@v4
+        with:
+          path: ./sysroot-${{ env.PLATFORM }}-${{ env.ARCH }}
+          key: ${{ env.PLATFORM }}-${{ env.ARCH }}-${{ hashFiles('scripts/build_dependencies.sh', 'scripts/fixup.sh') }}-${{ hashFiles('patches/**') }}
+
+      - name: Install build requirements
+        if: steps.cache-sysroot.outputs.cache-matched-key == ''
+        run: |
+          echo "/opt/homebrew/opt/bison/bin:/usr/local/opt/bison/bin" >> $GITHUB_PATH
+          brew install bison pkg-config gettext glib-utils libgpg-error nasm make meson cmake llvm spirv-llvm-translator libxcb libxrandr
+          pip3 install --break-system-packages --user six pyparsing pyyaml setuptools distlib mako
+          rm -f /usr/local/lib/pkgconfig/*.pc
+
+      # gstreamer.freedesktop.org closes HTTP/2 streams mid-download from GitHub's macOS runners
+      # (curl error 92, "HTTP/2 stream was not closed cleanly"), which aborts the dependency build after
+      # five retries. Forcing HTTP/1.1 for every curl in the build fixes it without patching upstream's
+      # script. Recorded in docs/DECISIONS.md as decision 0014.
+      - name: Make the source downloads use HTTP/1.1
+        run: |
+          printf 'http1.1\nretry = 3\nretry-delay = 5\n' > "$HOME/.curlrc"
+          cat "$HOME/.curlrc"
+
+      - name: Build dependencies
+        if: steps.cache-sysroot.outputs.cache-matched-key == ''
+        env:
+          # Upstream limits the TCI (JIT-less) build to one CPU because of runner memory; the JIT
+          # build uses all cores.
+          NCPU: ${{ contains(env.PLATFORM, '-tci') && '1' || '0' }}
+        run: ./scripts/build_dependencies.sh -p ${{ env.PLATFORM }} -a ${{ env.ARCH }}
+
+      - name: Report disk after dependency build
+        if: always()
+        run: df -h /
+
+      - name: Upload sysroot artifact
+        if: steps.cache-sysroot.outputs.cache-matched-key == ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: sysroot-${{ env.PLATFORM }}-${{ env.ARCH }}
+          path: ./sysroot-${{ env.PLATFORM }}-${{ env.ARCH }}
+          # Storing it uncompressed keeps the upload fast; the sysroot is already mostly binaries.
+          compression-level: 0
+
+      - name: Save cached sysroot
+        if: steps.cache-sysroot.outputs.cache-matched-key == ''
+        uses: actions/cache/save@v4
+        with:
+          path: ./sysroot-${{ env.PLATFORM }}-${{ env.ARCH }}
+          key: ${{ steps.cache-sysroot.outputs.cache-primary-key }}
+
+  build-ipa:
+    name: Build unsigned IPA
+    needs: sysroot
+    runs-on: ${{ inputs.runner || 'macos-15' }}
+    timeout-minutes: 120
+    env:
+      PLATFORM: ${{ inputs.platform || 'ios' }}
+      SCHEME: ${{ inputs.scheme || 'iOS' }}
+      PACKAGE_MODE: ${{ inputs.package_mode || 'ipa' }}
+      ARCH: arm64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Restore cached sysroot
+        id: cache-sysroot
+        uses: actions/cache/restore@v4
+        with:
+          path: ./sysroot-${{ env.PLATFORM }}-${{ env.ARCH }}
+          key: ${{ env.PLATFORM }}-${{ env.ARCH }}-${{ hashFiles('scripts/build_dependencies.sh', 'scripts/fixup.sh') }}-${{ hashFiles('patches/**') }}
+
+      - name: Fetch sysroot artifact (cache miss)
+        if: steps.cache-sysroot.outputs.cache-matched-key == ''
+        uses: actions/download-artifact@v4
+        with:
+          name: sysroot-${{ env.PLATFORM }}-${{ env.ARCH }}
+          path: .
+
+      - name: Confirm the sysroot is present
+        run: |
+          set -euo pipefail
+          test -d "sysroot-${{ env.PLATFORM }}-${{ env.ARCH }}" || {
+            echo "::error::sysroot-${{ env.PLATFORM }}-${{ env.ARCH }} is missing; the dependency job did not produce it"
+            exit 1
+          }
+          du -sh "sysroot-${{ env.PLATFORM }}-${{ env.ARCH }}"
+
+      - name: Build the iOS app (signing disabled)
+        run: ./scripts/build_utm.sh -k iphoneos -s "$SCHEME" -a "$ARCH" -o UTM
+
+      - name: Package the unsigned IPA
+        run: |
+          brew install ldid
+          mkdir -p dist
+          ./scripts/package.sh "$PACKAGE_MODE" UTM.xcarchive dist
+          ls -la dist
+
+      - name: Verify the IPA and write a checksum
+        run: |
+          set -euo pipefail
+          ipa=$(ls dist/*.ipa | head -n1)
+          echo "IPA: $ipa"
+          unzip -l "$ipa" | head -40
+          rm -rf /tmp/verify && mkdir -p /tmp/verify
+          unzip -q "$ipa" -d /tmp/verify
+          app=$(find /tmp/verify/Payload -maxdepth 1 -name '*.app' | head -n1)
+          echo "app bundle: $app"
+          plutil -p "$app/Info.plist" | egrep 'CFBundleIdentifier|CFBundleShortVersionString|MinimumOSVersion' || true
+          exe=$(plutil -extract CFBundleExecutable raw "$app/Info.plist")
+          lipo -info "$app/$exe"
+          if [ -f "$app/embedded.mobileprovision" ]; then
+            echo "::error::IPA unexpectedly contains a provisioning profile"
+            exit 1
+          fi
+          if codesign -dv "$app" 2>&1 | grep -q 'Authority=Apple'; then
+            echo "::error::IPA is Apple-signed; it must be unsigned"
+            exit 1
+          fi
+          cp "$ipa" dist/UTM-unsigned.ipa
+          shasum -a 256 dist/UTM-unsigned.ipa | tee dist/UTM-unsigned.ipa.sha256
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: UTM-unsigned-ipa
+          path: |
+            dist/UTM-unsigned.ipa
+            dist/UTM-unsigned.ipa.sha256
+
+      - name: Publish to the rolling ios-nightly release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="ios-nightly"
+          notes="Built from UTM commit ${{ github.sha }} by UbuntuPad CI (macOS $(sw_vers -productVersion), $(xcodebuild -version | head -n1)). Unsigned: no Apple account, certificate or provisioning profile was used."
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release edit "$tag" --notes "$notes"
+          else
+            gh release create "$tag" --title "UTM iOS (unsigned) nightly" --notes "$notes" --target "${{ github.sha }}"
+          fi
+          gh release upload "$tag" dist/UTM-unsigned.ipa dist/UTM-unsigned.ipa.sha256 --clobber
+          gh release view "$tag" --json url,assets --jq '.url'
