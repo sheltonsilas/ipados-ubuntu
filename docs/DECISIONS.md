@@ -597,14 +597,16 @@ is testable on Linux, where the floor does not exist:
   is refused with a reason. `readelf` checks in the workflow fail the build if the toolchain ever stops
   emitting that relocation, so the test cannot quietly become vacuous.
 - A bias is a **suggestion**, and the run treats a refused hint as information rather than as a
-  failure: on `macos-15` a hint at 8 GiB was refused outright and the kernel offered 12 GiB instead
-  (the dyld shared cache and the platform's own mappings live in that neighbourhood). Because a guest
-  address must be a host address, the runner cannot accept the address the kernel offers *unless* it is
-  a valid base: it asks `ImagePlacementPlanner` for the next candidate (12 attempts, 16 GiB apart,
-  every one of them aligned and above the floor) and also converts the offered address into a candidate
-  through the same alignment rule. The run reports which attempt was honoured
-  (`image_mapping=biased attempt=2`), and if every candidate is refused the error lists every
-  "asked for 0x…, the host offered 0x…" pair.
+  failure. Measured on `macos-15`: a hint at 8 GiB was refused and the kernel offered 12 GiB; every
+  candidate from 64 GiB to 240 GiB was refused too, and **448 GiB was accepted** — which is where XNU
+  puts hinted mappings. Because a guest address must be a host address, the runtime cannot accept the
+  address the kernel offers *unless* that address is a valid base: it asks `ImagePlacementPlanner` for
+  the next candidate (12 attempts, 16 GiB apart, every one aligned and above the floor) and also
+  converts the offered address into a candidate through the same alignment rule. The default target is
+  now 448 GiB, and the run reports which attempt was honoured
+  (`image_mapping=biased attempt=1`), or, if none was, every "asked for 0x…, the host offered 0x…"
+  pair. The first green run on `macos-15` needed the adaptive candidate (attempt 13), which is the whole
+  reason that fallback exists.
 - Cost: the image is no longer at its link-time address, so the run reports
   `image_placement=biased requested_bias=0x…` and `AT_PHDR`/`AT_ENTRY` carry the base that was actually
   used. Anything that assumed "guest address == link-time address" (including the old `.identity`-only

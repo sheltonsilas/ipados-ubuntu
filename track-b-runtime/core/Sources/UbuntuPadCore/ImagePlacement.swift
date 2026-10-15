@@ -56,10 +56,15 @@ public struct ImagePlacementPlanner {
     ///
     /// A bias is only ever a *suggestion*: another mapping may already own the address, and a host that
     /// says no is answering by placing the image elsewhere — which the runtime must not accept, because
-    /// a guest address is a host address here. 64 GiB is chosen to be far away from the regions the
-    /// platform uses for its own purposes: on `macos-15` (16 KiB pages, Xcode 16) a hint at 8 GiB was
-    /// refused and the kernel moved it to 12 GiB, while 64 GiB was honoured on the first attempt.
-    public static let defaultBiasTarget: UInt64 = 0x10_0000_0000  // 64 GiB, well clear of the floor
+    /// a guest address is a host address here.
+    ///
+    /// 448 GiB is measured, not guessed. On `macos-15` (16 KiB pages, Xcode 16) that is where the kernel
+    /// itself puts a hinted mapping: hints at 8 GiB were refused outright, and so were all twelve
+    /// candidates between 64 GiB and 240 GiB, while it accepted 448 GiB and *offered* it as the answer to
+    /// every refusal. Nothing here depends on that number being right — the runner retries and adapts
+    /// (`biasCandidates`, and the address a refused hint returns) — but starting in the right band keeps
+    /// the run report readable and saves twelve doomed syscalls.
+    public static let defaultBiasTarget: UInt64 = 0x70_0000_0000  // 448 GiB, where macOS maps user memory
 
     /// How far apart successive attempts are placed (16 GiB), and how many there are. Each candidate
     /// keeps the image's alignment, so one of them succeeds unless the address space is genuinely full.

@@ -186,9 +186,9 @@ final class ImagePlacementTests: XCTestCase {
     /// The conversion the runner uses when the host answers a refused hint with a free address.
     func testABiasCanBeDerivedFromAnyFreeAddress() throws {
         let planner = ImagePlacementPlanner()
-        // The address the kernel offered on macos-15 in place of a refused 8 GiB hint, for the real
-        // guest image (lowest virtual address 0).
-        let offered: UInt64 = 0x3_0000_0000
+        // The address `macos-15` offered for the real guest image (lowest virtual address 0) in place of
+        // every refused hint, and the one the first green end-to-end run was placed at.
+        let offered: UInt64 = 0x70_0000_0000
         let bias = planner.bias(lowest: 0, atOrAbove: offered, alignment: Self.sixtyFourKiB)
         XCTAssertEqual(bias, offered)
 
