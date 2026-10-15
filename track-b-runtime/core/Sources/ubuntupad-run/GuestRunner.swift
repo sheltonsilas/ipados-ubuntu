@@ -37,7 +37,7 @@ final class GuestRunner {
         case cannotMapImage(address: UInt64, length: UInt64, landedAt: UInt64, errno: Int32)
         case cannotReplaceReservedLowRegion(address: UInt64, length: UInt64, landedAt: UInt64, errno: Int32)
         case cannotMapStack
-        case segmentOutsideImage(String)
+        case segmentOutsideImage(name: String)
         case protectionFailed(address: UInt64, length: UInt64)
         case guestCannotRunOnThisHost
 
@@ -244,7 +244,9 @@ final class GuestRunner {
             trapPC: up_last_trap_pc(),
             protectionPages: protectionPlan.count,
             mergedProtectionPages: protectionPlan.filter(\.widensBeyondRequest).count,
-            addressSpaceReport: space.report(),
+            // The host owns the live address space: a guest that called `mmap` while running is only
+            // visible there, not in this function's copy made before the run.
+            addressSpaceReport: host.addressSpace.report(),
             traceSummary: dispatcher.trace.summary(),
             unimplemented: dispatcher.trace.unknownNumbers.sorted())
     }
