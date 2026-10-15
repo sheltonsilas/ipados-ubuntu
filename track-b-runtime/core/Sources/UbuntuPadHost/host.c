@@ -272,9 +272,11 @@ static void up_restore_handlers(struct sigaction *saved) {
 
 /*
  * The switch into guest mode. A naked function so nothing of the C frame (not even the compiler's idea
- * of the stack) survives the jump: x0 holds the entry point and x1 the guest stack top.
+ * of the stack) survives the jump. The two parameters are not C locals with a lifetime — they are just
+ * the ABI's way of promising that the entry point arrives in x0 and the guest stack top in x1.
  */
-__attribute__((naked)) static void up_enter_guest(void) {
+__attribute__((naked)) static void up_enter_guest(uint64_t entry, uint64_t stack_top) {
+    /* A naked body may contain nothing but assembly. */
     __asm__ __volatile__("mov sp, x1\n"
                          "br x0\n");
 }

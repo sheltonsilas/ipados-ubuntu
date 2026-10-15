@@ -33,11 +33,9 @@ on:
         description: 'GitHub-hosted runner label'
         required: true
         default: 'macos-15'
-  push:
-    branches:
-      - ubuntupad-ci
-    paths:
-      - '.github/workflows/ubuntupad-ios.yml'
+  # Dispatch only, deliberately: every run of this workflow builds QEMU for iOS from scratch when the
+  # cache is cold, which is tens of minutes of runner time. Syncing the file must not start one, and a
+  # push trigger would also race the cache with a simultaneous dispatch.
 
 permissions:
   contents: write
@@ -79,14 +77,43 @@ jobs:
           pip3 install --break-system-packages --user six pyparsing pyyaml setuptools distlib mako
           rm -f /usr/local/lib/pkgconfig/*.pc
 
-      # gstreamer.freedesktop.org closes HTTP/2 streams mid-download from GitHub's macOS runners
-      # (curl error 92, "HTTP/2 stream was not closed cleanly"), which aborts the dependency build after
-      # five retries. Forcing HTTP/1.1 for every curl in the build fixes it without patching upstream's
-      # script. Recorded in docs/DECISIONS.md as decision 0014.
-      - name: Make the source downloads use HTTP/1.1
+      # gstreamer.freedesktop.org is the one host this build cannot rely on from a GitHub runner: it
+      # closes HTTP/2 streams mid-download (curl error 92) and has answered 503 to the runners
+      # repeatedly. Two fixes, both recorded in docs/DECISIONS.md as decision 0014:
+      #   1. a curlrc that forces HTTP/1.1 and is far more patient than the build script's five
+      #      attempts (curl retries 5xx itself, so the window for a transient outage is minutes);
+      #   2. pre-fetching the three GStreamer tarballs into the directory UTM's downloader checks, so
+      #      a file that is already there is never re-fetched. GStreamer is genuinely part of the iOS
+      #      sysroot (SPICE server), so skipping it is not an option.
+      - name: Make the source downloads able to survive a flaky host
         run: |
-          printf 'http1.1\nretry = 3\nretry-delay = 5\n' > "$HOME/.curlrc"
+          set -euo pipefail
+          printf 'http1.1\nretry = 10\nretry-delay = 15\nretry-max-time = 900\n' > "$HOME/.curlrc"
           cat "$HOME/.curlrc"
+
+          # UTM's build directory name: build-<platform family>-<arch>, and "ios" is family "iOS".
+          build_dir="build-iOS-arm64"
+          mkdir -p "$build_dir"
+          for url in \
+            https://gstreamer.freedesktop.org/src/gstreamer/gstreamer-1.19.1.tar.xz \
+            https://gstreamer.freedesktop.org/src/gst-plugins-base/gst-plugins-base-1.19.1.tar.xz \
+            https://gstreamer.freedesktop.org/src/gst-plugins-good/gst-plugins-good-1.19.1.tar.xz ; do
+            file="$(basename "$url")"
+            if [ -s "$build_dir/$file" ]; then
+              echo "$file is already present"
+              continue
+            fi
+            echo "fetching $file"
+            if curl -fL --http1.1 --retry 10 --retry-delay 15 --retry-max-time 900 \
+                 -o "$build_dir/$file" "$url" && tar -tf "$build_dir/$file" >/dev/null 2>&1; then
+              shasum -a 256 "$build_dir/$file"
+            else
+              # Not fatal on its own: the dependency build tries again with the same patience, and its
+              # error message is the one that should appear in the log if the host is really down.
+              echo "::warning::$file could not be pre-fetched; the dependency build will try again"
+              rm -f "$build_dir/$file"
+            fi
+          done
 
       - name: Build dependencies
         if: steps.cache-sysroot.outputs.cache-matched-key == ''

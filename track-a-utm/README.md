@@ -44,19 +44,25 @@ this directory owns is the build definition, the pin, and the documentation.
    No personal access token is involved anywhere — which is also why this repository's CI cannot
    *trigger* the fork (that would need a cross-repository token, forbidden by the project rules).
 
-Everything is triggered by hand or by a push to the fork's `ubuntupad-ci` branch:
+The workflow lives on a dedicated branch of the fork (`ubuntupad-ci`), **not** on its `main`: that keeps
+`main` a clean record of the pinned upstream commit and stops upstream's own workflow — which triggers on
+pushes to `main` — from starting its nine-platform matrix every time we sync one file. Runs are started
+deliberately (`workflow_dispatch` only), because a cold sysroot build is tens of minutes of runner time:
 
 ```bash
 track-a-utm/tools/push-fork-ci.sh            # sync the workflow into the fork
 track-a-utm/tools/push-fork-ci.sh --dispatch # sync, then start a build
 gh run watch --repo sheltonsilas/UTM
+gh run list --repo sheltonsilas/UTM --workflow ubuntupad-ios.yml
 ```
 
 ## Known constraints to design around
 
 - **The sysroot build is the risk.** It compiles QEMU for iOS from source on a 3-vCPU/7 GiB runner.
-  The first attempt died on a network problem (curl error 92 downloading GStreamer; fixed with an
-  HTTP/1.1 `~/.curlrc`, decision 0014). Disk is not the constraint (the runner reports ~38 GiB free).
+  Both of the first two attempts died on the *same third-party host* (curl error 92, then HTTP 503,
+  from `gstreamer.freedesktop.org`), not on anything in UTM's build. The fix is a patient, HTTP/1.1
+  curl configuration plus pre-fetching the three GStreamer tarballs into the directory UTM's
+  downloader checks — decision 0014. Disk is not the constraint (the runner reports ~38 GiB free).
 - **JIT.** The normal UTM IPA expects a JIT enabler to attach; UTM SE is the non-JIT interpreter
   fallback and is much slower. The workflow can build either (`package_mode: ipa`, `ipa-hv`, `ipa-se`),
   and the choice belongs to a decision entry once there is a measured boot time to argue with.

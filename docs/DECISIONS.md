@@ -377,17 +377,38 @@ sysroot is built on (decision 0017), so the two macOS jobs are pinned together o
 
 **Date:** 2026-10-15 · **Status:** accepted, phase 1
 
-**Context.** The first UTM fork run failed for an infrastructure reason, not a code reason:
-`gstreamer.freedesktop.org` closes HTTP/2 streams mid-download from GitHub's macOS runners, so curl
-exits 92 and UTM's dependency script gives up after five retries.
+**Context.** Two UTM fork runs in a row failed for infrastructure reasons, not code reasons, and both
+times on the same host. `gstreamer.freedesktop.org` first closed HTTP/2 streams mid-download from
+GitHub's macOS runners (curl error 92), then answered **HTTP 503** to every attempt. UTM's dependency
+script gives up after five attempts and the whole sysroot build — tens of minutes of QEMU
+compilation — is lost. Note that the three GStreamer tarballs are genuinely part of the **iOS**
+sysroot (SPICE server), so "skip what iOS does not need" is not available.
 
-**Choice:** write `~/.curlrc` with `http1.1` before the dependency build. Every other download in the
-build keeps working, upstream's script is untouched, and the reason is written down next to the step
-that does it.
+**Options.**
 
-**Consequences.** A future session that sees "curl 92" in this pipeline can find this entry instead
-of re-diagnosing it. If upstream fixes the download (or switches mirror), the workaround can be
-removed — with a new decision entry saying so.
+1. Skip GStreamer. Not possible: `build_qemu_dependencies` builds it unconditionally, for every
+   platform.
+2. Mirror the tarballs as assets of our own release and fetch them from there. Works, but it makes a
+   third-party source archive part of this project's supply chain, with the checksum/provenance work
+   that implies — kept in reserve if the fixes below are not enough.
+3. **Make the fetch patient and repeatable, and pre-seed the files the build would re-fetch.**
+
+**Choice:** option 3, in two parts, both written next to the step that does them:
+
+- `~/.curlrc` sets `http1.1`, `retry = 10`, `retry-delay = 15`, `retry-max-time = 900` for every curl
+  in the build (curl retries 5xx itself, so a transient outage becomes a slower build, not a failure).
+- Before the dependency build, the three GStreamer tarballs are fetched into the directory UTM's
+  downloader looks in (`build-iOS-arm64/`). UTM's `download()` skips a file that is already present,
+  so a successful pre-fetch removes that host from the critical path entirely. The pre-fetch verifies
+  each file is a readable archive and only warns if it fails, because the build itself is about to try
+  again with the same patience — the error that appears in the log should be the build's own.
+
+**Consequences.** A future session seeing "curl 92" or "503" in this pipeline finds this entry instead
+of re-diagnosing it. If upstream switches mirror or fixes the download, both parts can be removed with
+a new decision entry. It also explains why a *fork* of UTM can hit this while upstream's CI does not:
+upstream builds its sysroots on **self-hosted** runners by default (`IS_SELF_HOSTED_RUNNER` defaults to
+true for `utmapp`), while we are on GitHub-hosted machines, whose IP ranges that host treats
+differently.
 
 ---
 

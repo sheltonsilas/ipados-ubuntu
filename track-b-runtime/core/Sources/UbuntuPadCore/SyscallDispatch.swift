@@ -375,7 +375,9 @@ extension SyscallDispatcher {
         }
 
         dispatcher.register(SyscallNumber.brk) { request, host in
-            .result(host.setProgramBreak(request.argument(0)))
+            // `brk` returns the break in effect; the guest compares it with what it asked for.
+            // bitPattern, not a plain conversion: an address above 2^63 must not trap.
+            .result(Int64(bitPattern: host.setProgramBreak(request.argument(0))))
         }
 
         dispatcher.register(SyscallNumber.mmap) { request, host in
