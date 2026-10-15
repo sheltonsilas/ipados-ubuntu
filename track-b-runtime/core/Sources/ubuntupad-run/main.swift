@@ -101,6 +101,7 @@ func runGuest(arguments: [String]) -> Int32 {
     var guestArguments: [String] = []
     var environment: [String] = ["PATH=/usr/bin:/bin", "HOME=/root", "TERM=dumb", "LC_ALL=C"]
     var verbose = false
+    var skipRelocations = false
 
     var index = 0
     while index < arguments.count {
@@ -108,6 +109,10 @@ func runGuest(arguments: [String]) -> Int32 {
         switch argument {
         case "--verbose", "-v":
             verbose = true
+        case "--skip-relocations":
+            // A deliberately broken run, used by CI to show that the relocation pass is load-bearing:
+            // without it a position-independent guest reads wild pointers instead of its own data.
+            skipRelocations = true
         case "--env":
             index += 1
             guard index < arguments.count else { fail("--env needs a KEY=VALUE argument") }
@@ -144,7 +149,8 @@ func runGuest(arguments: [String]) -> Int32 {
             executablePath: executablePath,
             arguments: argv,
             environment: environment,
-            verbose: verbose),
+            verbose: verbose,
+            skipRelocations: skipRelocations),
         emit: { emit("ubuntupad-run: " + $0) })
 
     do {

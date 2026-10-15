@@ -18,19 +18,36 @@ struct ParsedStack {
         let base = layout.bytesBaseAddress
         let bytes = [UInt8](layout.bytes)
 
+        // These two helpers report an out-of-range read as a test failure rather than trapping: a
+        // trapping helper in a test means one mistake kills the whole run instead of one assertion,
+        // which is exactly what happened the first time this file ran in CI.
+        func offset(of address: UInt64) -> Int? {
+            guard address >= base else { return nil }
+            let relative = address - base
+            guard relative < UInt64(bytes.count) else { return nil }
+            return Int(relative)
+        }
+
         func word(at address: UInt64) -> UInt64 {
-            let offset = Int(address - base)
+            guard let start = offset(of: address), start + 8 <= bytes.count else {
+                XCTFail("stack word at 0x\(String(address, radix: 16)) is outside the built stack")
+                return 0
+            }
             var value: UInt64 = 0
-            for index in 0..<8 { value |= UInt64(bytes[offset + index]) << (8 * UInt64(index)) }
+            for index in 0..<8 { value |= UInt64(bytes[start + index]) << (8 * UInt64(index)) }
             return value
         }
 
         func string(at address: UInt64) -> String {
-            var offset = Int(address - base)
+            guard let start = offset(of: address) else {
+                XCTFail("stack string at 0x\(String(address, radix: 16)) is outside the built stack")
+                return ""
+            }
+            var position = start
             var collected: [UInt8] = []
-            while offset < bytes.count, bytes[offset] != 0 {
-                collected.append(bytes[offset])
-                offset += 1
+            while position < bytes.count, bytes[position] != 0 {
+                collected.append(bytes[position])
+                position += 1
             }
             return String(decoding: collected, as: UTF8.self)
         }
@@ -38,11 +55,12 @@ struct ParsedStack {
         var cursor = layout.stackPointer
         argc = Int(word(at: cursor))
         cursor += 8
-        argv = (0..<argc).map { index -> String in
-            defer { cursor += 8 }
-            return string(at: word(at: cursor + UInt64(index * 8)))
+        var collectedArguments: [String] = []
+        for _ in 0..<max(argc, 0) {
+            collectedArguments.append(string(at: word(at: cursor)))
+            cursor += 8
         }
-        cursor += UInt64(argc * 8)
+        argv = collectedArguments
         XCTAssertEqual(word(at: cursor), 0, "argv must be NULL-terminated")
         cursor += 8
 

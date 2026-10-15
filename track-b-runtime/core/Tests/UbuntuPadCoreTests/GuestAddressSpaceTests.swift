@@ -203,7 +203,11 @@ final class GuestAddressSpaceTests: XCTestCase {
         XCTAssertEqual(GuestProtection.fromLinuxProt(2), .write)
         XCTAssertEqual(GuestProtection.fromLinuxProt(4), .execute)
         XCTAssertEqual(GuestProtection.fromLinuxProt(7), .all)
-        XCTAssertEqual(GuestProtection.fromLinuxProt(0), .none)
+        // `GuestProtection.none` is written out in full on purpose: on an Optional<GuestProtection>,
+        // a bare `.none` means *nil* (Optional.none), not the empty option set, so `.none` here would
+        // silently turn this assertion into a tautology. CI caught exactly that on the first run.
+        XCTAssertEqual(GuestProtection.fromLinuxProt(0), GuestProtection.none)
+        XCTAssertNotNil(GuestProtection.fromLinuxProt(0), "a zero protection is valid, not a failure")
         XCTAssertNil(GuestProtection.fromLinuxProt(1 << 20), "PROT_GROWSDOWN and friends are refused")
         XCTAssertEqual(GuestProtection.readExecute.linuxProtValue, 5)
         XCTAssertEqual(GuestProtection(elfFlags: 0x5), .readExecute, "ELF PF_R|PF_X")

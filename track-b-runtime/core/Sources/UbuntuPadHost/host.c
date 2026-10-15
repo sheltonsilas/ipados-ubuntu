@@ -66,9 +66,9 @@ int up_last_mapping_errno(void) { return g_mapping_errno; }
 
 void *up_reserve(uint64_t address, size_t length, int mode, uint64_t *address_out) {
     g_mapping_errno = 0;
+    (void)mode; /* only UP_RESERVE_HINT exists; see the header for why there is no MAP_FIXED mode */
     void *hint = address != 0 ? (void *)(uintptr_t)address : NULL;
-    int flags = MAP_ANON | MAP_PRIVATE | (mode == UP_RESERVE_REPLACE ? MAP_FIXED : 0);
-    void *mapping = mmap(hint, length, PROT_READ | PROT_WRITE, flags, -1, 0);
+    void *mapping = mmap(hint, length, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
     if (mapping == MAP_FAILED) {
         g_mapping_errno = errno;
         if (address_out) *address_out = 0;
@@ -359,9 +359,10 @@ int up_last_mapping_errno(void) { return g_mapping_errno; }
 
 void *up_reserve(uint64_t address, size_t length, int mode, uint64_t *address_out) {
     g_mapping_errno = 0;
-    int flags = MAP_ANON | MAP_PRIVATE | (mode == UP_RESERVE_REPLACE ? MAP_FIXED : 0);
+    (void)mode; /* only UP_RESERVE_HINT exists; see the header */
     void *mapping =
-        mmap(address != 0 ? (void *)(uintptr_t)address : NULL, length, PROT_READ | PROT_WRITE, flags, -1, 0);
+        mmap(address != 0 ? (void *)(uintptr_t)address : NULL, length, PROT_READ | PROT_WRITE,
+             MAP_ANON | MAP_PRIVATE, -1, 0);
     if (mapping == MAP_FAILED) {
         g_mapping_errno = errno;
         if (address_out) *address_out = 0;

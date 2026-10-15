@@ -44,11 +44,17 @@ jobs:
           set -euo pipefail
           mkdir -p build
           # -nostdlib: no libc, so every syscall is written out by hand and nothing hides a mistake.
-          # -no-pie: a fixed-address ET_EXEC image, which is what lets the loader map it at its own
-          #          virtual addresses (Phase 2 has no relocation pass yet).
-          common="-static -nostdlib -no-pie -ffreestanding -fno-builtin -O1"
-          aarch64-linux-gnu-gcc $common -o build/hello-nostdlib track-b-runtime/testdata/hello-nostdlib.c
-          aarch64-linux-gnu-gcc $common -o build/stack-probe-nostdlib track-b-runtime/testdata/stack-probe-nostdlib.c
+          # -static-pie: position-independent, which is how Ubuntu ships its own arm64 binaries and the
+          #              only shape that can be placed at a bias. See decision 0019 for why the runtime
+          #              cannot simply map a Linux binary at its link-time address on Apple silicon.
+          common="-static -nostdlib -ffreestanding -fno-builtin -O1"
+          aarch64-linux-gnu-gcc $common -static-pie -fPIE \
+            -o build/hello-pie-nostdlib track-b-runtime/testdata/hello-pie-nostdlib.c
+          aarch64-linux-gnu-gcc $common -static-pie -fPIE \
+            -o build/stack-probe-nostdlib track-b-runtime/testdata/stack-probe-nostdlib.c
+          # The fixed-address (ET_EXEC) build: the runtime must refuse it, with a reason, and CI checks
+          # that it does. It is built here so the refusal is tested against a real binary.
+          aarch64-linux-gnu-gcc $common -no-pie -o build/hello-fixed-nostdlib track-b-runtime/testdata/hello-nostdlib.c
           # The libc-linked program the ELF parser and patch planner are tested against.
           aarch64-linux-gnu-gcc -static -O0 -o build/hello-arm64 track-b-runtime/testdata/hello.c
           file build/*
@@ -58,13 +64,13 @@ jobs:
       - name: Confirm the freestanding programs have no interpreter and no libc
         run: |
           set -euo pipefail
-          for binary in build/hello-nostdlib build/stack-probe-nostdlib; do
+          for binary in build/hello-pie-nostdlib build/stack-probe-nostdlib; do
             if readelf -l "$binary" | grep -q INTERP; then
               echo "::error::$binary unexpectedly has a PT_INTERP segment"
               exit 1
             fi
-            if readelf -h "$binary" | grep -q 'DYN'; then
-              echo "::error::$binary is ET_DYN; the Phase 2 loader maps images at their own addresses"
+            if ! readelf -h "$binary" | grep -q 'Type:[[:space:]]*DYN'; then
+              echo "::error::$binary is not ET_DYN; the position-independent path is what CI must exercise"
               exit 1
             fi
             # Exactly two syscall instructions: write, then exit_group. Any more (or fewer) means the
@@ -76,6 +82,42 @@ jobs:
               exit 1
             fi
           done
+
+      - name: Confirm the fixed-address build really is ET_EXEC, and that it lives in the reserved region
+        run: |
+          set -euo pipefail
+          binary=build/hello-fixed-nostdlib
+          if ! readelf -h "$binary" | grep -q 'Type:[[:space:]]*EXEC'; then
+            echo "::error::$binary is not ET_EXEC, so it would not test the refusal path"
+            exit 1
+          fi
+          if readelf -l "$binary" | grep -q INTERP; then
+            echo "::error::$binary unexpectedly has a PT_INTERP segment"
+            exit 1
+          fi
+          count=$(aarch64-linux-gnu-objdump -d "$binary" | grep -cE '[[:space:]]d4000001[[:space:]]' || true)
+          [ "$count" -eq 2 ] || { echo "::error::$binary has $count svc instructions, expected 2"; exit 1; }
+          # This is the whole reason the runtime needs a placement decision: a normal Linux link address
+          # is inside the 4 GiB that macOS reserves in every arm64 process.
+          first_load=$(aarch64-linux-gnu-readelf -lW "$binary" | awk '$1 == "LOAD" { print $3; exit }')
+          echo "$binary first PT_LOAD vaddr=$first_load"
+          [ "$((first_load))" -lt 4294967296 ] || {
+            echo "::error::the fixed-address build is linked above 4 GiB, so it would not exercise the refusal"
+            exit 1
+          }
+
+      - name: Confirm the position-independent hello needs a relocation
+        run: |
+          set -euo pipefail
+          relocations=$(aarch64-linux-gnu-readelf -r build/hello-pie-nostdlib | grep -c 'R_AARCH64_RELATIVE' || true)
+          echo "build/hello-pie-nostdlib has $relocations R_AARCH64_RELATIVE relocation(s)"
+          aarch64-linux-gnu-readelf -r build/hello-pie-nostdlib | head -n 20
+          # If the compiler ever folds this pointer away, the end-to-end test stops proving anything:
+          # the runtime's relocation pass would have nothing to do and the control run would pass too.
+          if [ "$relocations" -lt 1 ]; then
+            echo "::error::the position-independent hello has no relative relocation, so the CI run would not prove the relocation pass works"
+            exit 1
+          fi
 
       - uses: actions/upload-artifact@v4
         with:
@@ -162,8 +204,9 @@ jobs:
           set -euo pipefail
           bash "$GITHUB_WORKSPACE/tools/assert-guest-run.sh" \
             .build/release/ubuntupad-run \
-            "$GITHUB_WORKSPACE/build/hello-nostdlib" \
-            "$GITHUB_WORKSPACE/build/stack-probe-nostdlib"
+            "$GITHUB_WORKSPACE/build/hello-pie-nostdlib" \
+            "$GITHUB_WORKSPACE/build/stack-probe-nostdlib" \
+            "$GITHUB_WORKSPACE/build/hello-fixed-nostdlib"
 
       - name: Upload the run logs
         if: always()

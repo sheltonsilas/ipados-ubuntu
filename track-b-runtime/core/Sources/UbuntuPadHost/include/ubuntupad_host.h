@@ -55,26 +55,26 @@ uint64_t up_total_memory(void);
 /*
  * Reserves `length` bytes of anonymous, readable and writable memory, asking for `address`.
  *
- * Two modes, and the difference matters:
+ *   UP_RESERVE_HINT  the address is a hint. If it is occupied the mapping lands elsewhere and
+ *                    `*address_out` says where. Nothing is ever silent: the caller compares
+ *                    `*address_out` with what it asked for and refuses to continue on a mismatch.
  *
- *   UP_RESERVE_HINT     the address is a hint. If it is occupied the mapping lands elsewhere and
- *                       `*address_out` says where. Nothing is ever silent: the caller compares
- *                       `*address_out` with what it asked for and refuses to continue on a mismatch.
- *   UP_RESERVE_REPLACE  MAP_FIXED: whatever is mapped at `address` is discarded. This is the only way
- *                       to map inside the host's reserved low region (see below), and it is dangerous
- *                       everywhere else — the caller must have checked `up_reserved_low_region_size()`
- *                       against the whole range first.
+ * There is deliberately no `MAP_FIXED` mode. The only place forcing an address would ever have helped
+ * is the host's reserved low region, and locking an address there does not work: the kernel reserves
+ * that range for the whole process, so a forced mapping in it fails (and shrinking the reservation at
+ * link time produces a binary the kernel kills at startup). The runtime instead places the guest image
+ * somewhere it *can* live — see `ImagePlacement` in UbuntuPadCore and DECISIONS.md decision 0019.
  *
  * Returns NULL on failure; `up_last_mapping_errno()` then explains why.
  */
 #define UP_RESERVE_HINT 0
-#define UP_RESERVE_REPLACE 1
 void *up_reserve(uint64_t address, size_t length, int mode, uint64_t *address_out);
 
 /*
  * The size of the host's reserved low memory region — macOS arm64 lays out a 4 GiB `__PAGEZERO` at the
- * bottom of every arm64 process, which is why a Linux executable linked at its usual 0x400000 cannot
- * simply be mapped at its own addresses. Returns 0 when the host has no such region (Linux).
+ * bottom of every arm64 process, which is why a Linux executable linked at its usual 0x400000 cannot be
+ * mapped at its own addresses. The placement planner consumes this number; the host layer only reports
+ * it. Returns 0 when the host has no such region (Linux).
  */
 uint64_t up_reserved_low_region_size(void);
 

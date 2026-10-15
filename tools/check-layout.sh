@@ -30,6 +30,7 @@ required_files=(
   track-b-runtime/ios/project.yml
   track-b-runtime/runner-entitlements.plist
   track-b-runtime/testdata/hello-nostdlib.c
+  track-b-runtime/testdata/hello-pie-nostdlib.c
   track-b-runtime/testdata/stack-probe-nostdlib.c
   tools/assert-guest-run.sh
   .github/workflows/build-ipa.yml

@@ -20,18 +20,16 @@ let package = Package(
         // Tiny on purpose — the policy lives in Swift, the unavoidable machine code lives here.
         .target(name: "UbuntuPadHost"),
         .target(name: "UbuntuPadCore"),
+        // NOTE: this target deliberately has no linker settings. Shrinking macOS's 4 GiB __PAGEZERO at
+        // link time (`-pagezero_size`) looked like the clean fix for mapping a Linux executable at its
+        // own 0x400000, and it links — but the kernel then killed the binary at startup with no output
+        // at all (`Killed: 9`, exit 137), twice. The 4 GiB reservation is a kernel rule for arm64, not
+        // an empty region, so the runtime does not try to reach into it: it *places* the image at a
+        // bias and applies the image's relative relocations instead. See decision 0019
+        // (`UbuntuPadCore.ImagePlacement` and `UbuntuPadCore.Relocations`).
         .executableTarget(
             name: "ubuntupad-run",
-            dependencies: ["UbuntuPadCore", "UbuntuPadHost"],
-            linkerSettings: [
-                // macOS arm64 reserves a 4 GiB __PAGEZERO at the bottom of every process, which makes
-                // the low 4 GiB unmappable — and a Linux executable is linked at 0x400000, inside it.
-                // Shrinking the reserved region to 64 KiB (still enough to catch null dereferences) lets
-                // the guest image be mapped at the address its own pointers already use, so Track B can
-                // keep its identity mapping instead of relocating guest code. Decision 0015.
-                .unsafeFlags(["-Xlinker", "-pagezero_size", "-Xlinker", "0x10000"],
-                             .when(platforms: [.macOS]))
-            ]
+            dependencies: ["UbuntuPadCore", "UbuntuPadHost"]
         ),
         .testTarget(
             name: "UbuntuPadCoreTests",

@@ -414,7 +414,9 @@ differently.
 
 ## 0015 — The guest runner is linked with a 64 KiB `__PAGEZERO`
 
-**Date:** 2026-10-15 · **Status:** accepted, phase 2
+**Date:** 2026-10-15 · **Status:** **superseded by 0019** — the technique was measured and it does
+not work; kept because the reasoning is what led to the fix, and because a future session will
+otherwise propose it again.
 
 **Context.** Every arm64 macOS process reserves a **4 GiB** `__PAGEZERO` at the bottom of its address
 space. A Linux executable is linked at 0x400000 — inside that reservation — so with identity mapping
@@ -443,6 +445,12 @@ This is a genuine, load-bearing platform fact, not a detail.
   fallback can never be silent.
 - `-pagezero_size` reaches the linker through SwiftPM `unsafeFlags`, which is only permitted for a
   root package. This package is therefore not usable as a dependency; acceptable, and reversible.
+
+**Superseded (2026-10-15).** The flag *does* pass the linker, and the binary it produces is killed by
+the kernel before `main` runs (`Killed: 9`, exit 137, no output at all). Research into XNU's loader
+plus the observed behaviour settled that the 4 GiB reservation is a kernel rule for arm64, not a free
+region that happens to be reserved, so `MAP_FIXED` cannot reach below it either. The measurement and
+the replacement design are decision 0019.
 
 ---
 
@@ -531,3 +539,66 @@ does with a sub-page range, and it is the only option that cannot break a correc
 protection is coarser than the guest believes. That is a documented consequence of 16 KiB pages on Apple
 silicon (not of this implementation), and it is visible: the run output reports `merged_pages=N`, and a
 unit test asserts both the merge (16 KiB) and the absence of a merge (4 KiB).
+
+---
+
+## 0019 — The low 4 GiB cannot be used at all, so guest images are *placed* at a bias and relocated
+
+**Date:** 2026-10-15 · **Status:** accepted, phase 2 (supersedes 0015)
+
+**Context.** Decision 0015 tried to make the low 4 GiB usable so that a Linux executable linked at its
+usual 0x400000 could be mapped at its own addresses. Two mechanisms were tried in CI, and **both
+failed**, in ways that are easy to misread as unrelated bugs:
+
+- **Shrinking the runner's own reservation at link time** (`-Xlinker -pagezero_size 0x10000`). The
+  build succeeded, `.build/release/ubuntupad-run` was produced, and every invocation of it was killed
+  by the kernel before `main`: bash reported `Killed: 9`, exit status 137, with no output at all — not
+  even the version line. The same binary with the flag removed ran normally.
+- **`MAP_FIXED` over the reservation.** The kernel refuses it, so the mapping never lands where it was
+  asked for. (This was the fallback path in the old `mapImage`.)
+
+Research into XNU's Mach-O loader confirmed why: on arm64 the loader *requires* a 4 GiB `__PAGEZERO`
+(`LOAD_BADMACHO` otherwise) and refuses to map below it. This is a kernel rule, not an empty region —
+which also explains the silent SIGKILL for a shrunken reservation.
+
+**Options.**
+
+1. Keep fighting for the address (patch the guest's link address, patch XNU, use a debugger). Not
+   possible for binaries we do not build, and real Ubuntu binaries are the whole point.
+2. Refuse every image that is linked below 4 GiB. Honest, but the runtime would run almost nothing on
+the platform it exists for.
+3. **Place the image where it *can* live and make it correct for that base**: decide identity vs bias
+   from the image's own type, and apply the image's relative relocations before mapping, which is what
+   a position-independent binary expects the loader to do anyway.
+
+**Choice:** option 3, implemented in the portable core (`ImagePlacement`, `Relocations`) so every branch
+is testable on Linux, where the floor does not exist:
+
+- **ET_DYN (PIE)** — any bias works provided it keeps the image's alignment, so the image is moved
+  above the floor (default target 8 GiB) and its `R_AARCH64_RELATIVE` relocations are applied. This is
+  what Ubuntu ships for arm64, so it is the path real programs take, not an exotic one.
+- **ET_EXEC above the floor** — mapped identity: it is already where it can live.
+- **ET_EXEC below the floor** — **refused**, with a message that names the linked address, why forcing
+  it cannot work, and that a position-independent build would run.
+- Symbol-based relocations (`R_AARCH64_ABS64`, `_IRELATIVE`, ...) are collected and *refused* rather
+  than partially applied: an image with some of its relocations applied looks alive and reads garbage.
+- Relocations that target zero-filled memory (`.bss`) are refused too, because the runtime patches the
+  image *before* mapping it and those bytes have nothing in the file to patch.
+
+**Consequences.**
+
+- `MAP_FIXED` is gone from the host layer; there is one mapping rule, a hint that must be honoured, and
+  a mismatch ends the run with the address and errno. The plist fallback for executable memory
+  (decision 0016) is unaffected.
+- The CI guest programs are now built `-static-pie`, and `hello-pie-nostdlib.c` prints through a
+  `volatile` global pointer so that the relocation pass has real work to do. `tools/assert-guest-run.sh`
+  asserts three things that could not all pass if the pass were decorative: the relocated guest prints
+  its message, the *same* guest run with `--skip-relocations` does **not**, and the fixed-address build
+  is refused with a reason. `readelf` checks in the workflow fail the build if the toolchain ever stops
+  emitting that relocation, so the test cannot quietly become vacuous.
+- Cost: the image is no longer at its link-time address, so the run reports `image_placement=biased
+  bias=0x…` and `AT_PHDR`/`AT_ENTRY` carry the bias. Anything that assumed "guest address == link-time
+  address" (including the old `.identity`-only tests) had to be re-derived from the bias.
+- Still open: a real Ubuntu binary is dynamically linked, so `PT_INTERP` and symbol relocations remain
+  Phase 4 work. This decision is what makes *static* PIE images — and therefore the whole path to real
+  programs — runnable at all.

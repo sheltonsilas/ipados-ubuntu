@@ -39,8 +39,11 @@ desktop and reports back; boot time is written into STATUS.md.
 ## Phase 2 — Track B core (native arm64 execution)
 
 - [x] arm64 ELF loader: header/program-header parsing, `PT_LOAD` mapping with `.bss` zeroing, and a
-      patch planner that finds every `svc` in the executable segments. Relocations are **not** done:
-      ET_DYN images are refused with a message saying so.
+      patch planner that finds every `svc` in the executable segments.
+- [x] Image placement and relocation: decide identity vs bias from the image (decision 0019 — the low
+      4 GiB is a kernel reservation on Apple silicon and cannot be mapped into), apply
+      `R_AARCH64_RELATIVE` relocations for the chosen base, and refuse a fixed-address image below the
+      floor with a message that says what would work instead.
 - [x] Guest address-space model: 4 KiB guest pages over 16 KiB host pages, region bookkeeping,
       buffer validation (a guest bug becomes `EFAULT`, not a host crash) and a host-page protection
       plan that reports merges (decision 0018)
@@ -52,8 +55,9 @@ desktop and reports back; boot time is written into STATUS.md.
       `AT_PAGESZ` = 4096 on a 16 KiB host) built in the portable core and parsed back by tests
 - [x] Decide and document the capture mechanism: rewrite `svc` to a breakpoint and handle SIGTRAP
       (decision 0012) — no generated code, no writable+executable pages
-- [ ] Static arm64 "hello world" runs end to end in CI and its stdout is asserted — implemented and
-      pushed; awaiting a green `runtime-e2e` run on `macos-15` (see STATUS.md)
+- [ ] A static position-independent arm64 "hello" runs end to end in CI and its stdout is asserted —
+      implemented, with a control run (`--skip-relocations`) and a refusal test; awaiting a green
+      `runtime-e2e` run on `macos-15` (see STATUS.md)
 - [ ] The same binary runs inside the iOS app (unverified on device until tested)
 - [ ] `fork`/`clone`/exec of a second process
 

@@ -54,9 +54,15 @@ jobs:
           aarch64-linux-gnu-gcc -static -O0 -o build/hello-arm64 track-b-runtime/testdata/hello.c
           # Freestanding programs: no libc, every syscall written out by hand, exactly two svc sites
           # each. These are the images the end-to-end run executes (runtime-e2e.yml).
-          common="-static -nostdlib -no-pie -ffreestanding -fno-builtin -O1"
-          aarch64-linux-gnu-gcc $common -o build/hello-nostdlib track-b-runtime/testdata/hello-nostdlib.c
-          aarch64-linux-gnu-gcc $common -o build/stack-probe-nostdlib track-b-runtime/testdata/stack-probe-nostdlib.c
+          common="-static -nostdlib -ffreestanding -fno-builtin -O1"
+          # The position-independent build is the one that can actually be placed at a bias, and its
+          # global pointer gives the relocation pass real work to do (decision 0019).
+          aarch64-linux-gnu-gcc $common -static-pie -fPIE \
+            -o build/hello-pie-nostdlib track-b-runtime/testdata/hello-pie-nostdlib.c
+          # The fixed-address build: a real ET_EXEC image, which the runtime must refuse on Apple
+          # silicon. Building it here keeps that refusal tested against toolchain output on Linux too.
+          aarch64-linux-gnu-gcc $common -no-pie -o build/hello-fixed-nostdlib track-b-runtime/testdata/hello-nostdlib.c
+          aarch64-linux-gnu-gcc $common -no-pie -o build/stack-probe-nostdlib track-b-runtime/testdata/stack-probe-nostdlib.c
           file build/*
           ls -l build
 
@@ -64,7 +70,8 @@ jobs:
         working-directory: track-b-runtime/core
         env:
           UBUNTUPAD_TEST_BINARY: ${{ github.workspace }}/build/hello-arm64
-          UBUNTUPAD_TEST_NOSTDLIB_BINARY: ${{ github.workspace }}/build/hello-nostdlib
+          UBUNTUPAD_TEST_NOSTDLIB_BINARY: ${{ github.workspace }}/build/hello-fixed-nostdlib
+          UBUNTUPAD_TEST_PIE_BINARY: ${{ github.workspace }}/build/hello-pie-nostdlib
         # No --filter: every test that needs a real binary must run, not just the ELF ones.
         run: swift test
 

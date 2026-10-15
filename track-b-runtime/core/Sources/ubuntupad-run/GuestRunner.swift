@@ -13,12 +13,16 @@ import Glibc
 /// This is Track B's engine room. The sequence is the whole design in one place:
 ///
 /// 1. parse the image and plan the patch that turns every Linux `svc #0` into a breakpoint;
-/// 2. map the image at its own virtual addresses (identity mapping — a guest address *is* a host
+/// 2. decide *where* the image can live on this host (`ImagePlacement`) — this is where the platform's
+///    reserved low memory is dealt with, by moving the image rather than by fighting the kernel;
+/// 3. apply the image's own relative relocations, in the file bytes, so the picture-independent image
+///    becomes correct for the base it is about to be mapped at;
+/// 4. map the image at `bias + link-time address` (identity mapping — a guest address *is* a host
 ///    address, which is what makes guest pointers safe to dereference in the syscall services);
-/// 3. write the patched image and the Linux initial stack (argc/argv/envp/auxv) into it;
-/// 4. protect each host page according to the plan — read-only text stays read-only, and on a 16 KiB
+/// 5. write the patched image and the Linux initial stack (argc/argv/envp/auxv) into it;
+/// 6. protect each host page according to the plan — read-only text stays read-only, and on a 16 KiB
 ///    host two guest segments sharing a page get the union of their rights;
-/// 5. install the trap handler and branch to the entry point. Every syscall then arrives in Swift.
+/// 7. install the trap handler and branch to the entry point. Every syscall then arrives in Swift.
 ///
 /// Nothing here writes an executable mapping: the text is written while it is writable and made
 /// executable afterwards, so there is never a writable-and-executable page. See
@@ -30,27 +34,35 @@ final class GuestRunner {
         var environment: [String]
         var stackSize: Int = 1 << 20
         var verbose: Bool = false
+        /// Test-only escape hatch: run without the relocation pass, so CI can show that a
+        /// position-independent guest *needs* it (the run then faults instead of printing its message).
+        var skipRelocations: Bool = false
     }
 
     enum RunError: Error, CustomStringConvertible {
         case cannotReadImage(String)
+        case cannotRunOnThisHost(reason: String)
+        case relocationFailed(String)
+        case unsupportedRelocations(types: [UInt32])
         case cannotMapImage(address: UInt64, length: UInt64, landedAt: UInt64, errno: Int32)
-        case cannotReplaceReservedLowRegion(address: UInt64, length: UInt64, landedAt: UInt64, errno: Int32)
         case cannotMapStack
         case segmentOutsideImage(name: String)
         case protectionFailed(address: UInt64, length: UInt64)
-        case guestCannotRunOnThisHost
 
         var description: String {
             switch self {
             case let .cannotReadImage(description):
                 return "cannot read the guest image: \(description)"
+            case let .cannotRunOnThisHost(reason):
+                return "this image cannot run on this host. \(reason)"
+            case let .relocationFailed(detail):
+                return "the image's relative relocations could not be applied: \(detail)"
+            case let .unsupportedRelocations(types):
+                return
+                    "the image needs relocation types \(types.map(String.init).joined(separator: ", ")) that this runtime does not implement. Applying some relocations and not others would produce a program that looks alive and reads garbage, so the runtime refuses instead; symbol-based relocations belong with the dynamic linker (Phase 4)."
             case let .cannotMapImage(address, length, landedAt, errorNumber):
                 return
                     "cannot map the guest image at 0x\(String(address, radix: 16)) (0x\(String(length, radix: 16)) bytes, errno \(errorNumber))\(landedAt == 0 ? "" : "; the kernel offered 0x\(String(landedAt, radix: 16))"). A guest address must be a host address, so the runtime refuses to continue rather than run the image somewhere its own pointers do not point."
-            case let .cannotReplaceReservedLowRegion(address, length, landedAt, errorNumber):
-                return
-                    "the guest image at 0x\(String(address, radix: 16)) (0x\(String(length, radix: 16)) bytes) falls inside the host's reserved low region, and replacing that region failed (errno \(errorNumber)\(landedAt == 0 ? "" : ", landed at 0x\(String(landedAt, radix: 16))")). The runner is normally linked with a 64 KiB __PAGEZERO so this cannot happen; see DECISIONS.md decision 0015."
             case .cannotMapStack:
                 return "cannot reserve the guest stack"
             case let .segmentOutsideImage(name):
@@ -58,8 +70,6 @@ final class GuestRunner {
             case let .protectionFailed(address, length):
                 return
                     "mprotect failed for 0x\(String(address, radix: 16))+0x\(String(length, radix: 16))"
-            case .guestCannotRunOnThisHost:
-                return "this host cannot execute AArch64 guest code (see the probe mode for details)"
             }
         }
     }
@@ -69,6 +79,9 @@ final class GuestRunner {
         var exitStatus: Int32
         var syscallCount: Int
         var patchedSites: Int
+        var placement: String
+        var bias: UInt64
+        var relativeRelocations: Int
         var faultSignal: Int32
         var faultAddress: UInt64
         var trapPC: UInt64
@@ -88,7 +101,9 @@ final class GuestRunner {
     }
 
     func run() throws -> Result {
-        guard up_can_run_guest() != 0 else { throw RunError.guestCannotRunOnThisHost }
+        guard up_can_run_guest() != 0 else {
+            throw RunError.cannotRunOnThisHost(reason: "this CPU cannot execute AArch64 guest code")
+        }
 
         let hostPageSize = Int(up_page_size())
         guard let geometry = PageGeometry(guestPageSize: 4096, hostPageSize: hostPageSize) else {
@@ -116,32 +131,76 @@ final class GuestRunner {
 
         let plan = try PatchPlanner().plan(image: image, bytes: bytes)
 
-        // --- 2. map the image at its own virtual addresses
+        // --- 2. where can this image live on this host?
+        //
+        // On Apple silicon the answer is never "at its link-time addresses" for a normal Linux
+        // executable: the low 4 GiB is `__PAGEZERO`, reserved by the kernel for every arm64 process.
+        // The planner decides between identity, a bias, and an honest refusal, and it is a pure
+        // function of the image plus the platform, so Linux CI can test every branch of it.
+        let reservedLowRegion = up_reserved_low_region_size()
+        let placement = try ImagePlacementPlanner().plan(
+            image: image, reservedLowRegion: reservedLowRegion)
+        if case let .refused(reason) = placement {
+            throw RunError.cannotRunOnThisHost(reason: reason)
+        }
+        let bias = placement.bias
+        let placementName = bias == 0 ? "identity" : "biased"
+        emit(
+            "image_placement=\(placementName) bias=0x\(String(bias, radix: 16)) reserved_low_region_bytes=\(reservedLowRegion)"
+        )
+
+        // --- 3. make the image correct for that base by applying its own relocations
+        var relocatedImage = plan.patchedImage
+        var relativeRelocations = 0
+        if let dynamic = try DynamicSection.parse(image: image, bytes: bytes) {
+            var table = RelocationTable()
+            try table.parse(dynamic: dynamic, image: image, bytes: bytes)
+            if table.unsupportedCount > 0 {
+                throw RunError.unsupportedRelocations(types: table.unsupported.map { $0.type })
+            }
+            if !options.skipRelocations {
+                do {
+                    relativeRelocations = try table.apply(to: &relocatedImage, image: image, bias: bias)
+                } catch let error as RelocationError {
+                    throw RunError.relocationFailed(error.description)
+                }
+            }
+            emit(
+                "relative_relocations=\(table.relativeCount) applied=\(options.skipRelocations ? 0 : relativeRelocations)\(options.skipRelocations && table.relativeCount > 0 ? " (skipped on request: this run is deliberately unrelocated)" : "")"
+            )
+        } else {
+            // A static, non-PIE image has no dynamic section; the refusal above already covers the case
+            // where such an image cannot be mapped, so reaching here means identity mapping is fine.
+            emit("relative_relocations=none (the image has no PT_DYNAMIC segment)")
+        }
+
+        // --- 4. map the image at its own virtual addresses, moved by the bias
         let loadSegments = image.loadSegments
         guard
-            let lowest = loadSegments.map({ geometry.roundDownToHostPage($0.virtualAddress) }).min(),
+            let lowest = loadSegments.map({ geometry.roundDownToHostPage($0.virtualAddress + bias) }).min(),
             let highest = loadSegments.map({
-                geometry.roundUpToHostPage($0.virtualAddress + $0.memorySize)
+                geometry.roundUpToHostPage($0.virtualAddress + bias + $0.memorySize)
             }).max()
         else {
             throw RunError.cannotReadImage("the image has no PT_LOAD segments")
         }
         let imageLength = highest - lowest
         emit("image_span=0x\(String(lowest, radix: 16))-0x\(String(highest, radix: 16))")
-        emit("image_mapping=\(try mapImage(address: lowest, length: imageLength, highest: highest))")
-        emit("reserved_low_region_bytes=\(up_reserved_low_region_size())")
+        try mapImage(address: lowest, length: imageLength)
+        emit("image_mapping=\(bias == 0 ? "identity" : "biased-by-0x\(String(bias, radix: 16))")")
 
         var space = GuestAddressSpace(geometry: geometry)
 
-        // --- 3a. the image contents
+        // --- 5a. the image contents
         for segment in loadSegments {
             let name = "PT_LOAD[\(segment.index)]"
             let end = Int(segment.fileOffset + segment.fileSize)
-            guard end <= plan.patchedImage.count else { throw RunError.segmentOutsideImage(name: name) }
-            let destination = UnsafeMutableRawPointer(bitPattern: UInt(segment.virtualAddress))
+            guard end <= relocatedImage.count else { throw RunError.segmentOutsideImage(name: name) }
+            let guestAddress = segment.virtualAddress + bias
+            let destination = UnsafeMutableRawPointer(bitPattern: UInt(guestAddress))
             guard let destination else { throw RunError.segmentOutsideImage(name: name) }
             if segment.fileSize > 0 {
-                plan.patchedImage.withUnsafeBytes { raw in
+                relocatedImage.withUnsafeBytes { raw in
                     guard let base = raw.baseAddress else { return }
                     destination.copyMemory(
                         from: base.advanced(by: Int(segment.fileOffset)), byteCount: Int(segment.fileSize))
@@ -157,11 +216,11 @@ final class GuestRunner {
             }
             try space.map(
                 name: name,
-                guestRange: segment.virtualAddress..<(segment.virtualAddress + segment.memorySize),
+                guestRange: guestAddress..<(guestAddress + segment.memorySize),
                 protection: GuestProtection(elfFlags: segment.flags))
         }
 
-        // --- 3b. the stack, then the Linux initial stack image inside it
+        // --- 5b. the stack, then the Linux initial stack image inside it
         var stackAddress: UInt64 = 0
         guard up_reserve(0, options.stackSize, Int32(UP_RESERVE_HINT), &stackAddress) != nil else {
             throw RunError.cannotMapStack
@@ -171,16 +230,20 @@ final class GuestRunner {
             guestRange: stackAddress..<(stackAddress + UInt64(options.stackSize)),
             protection: .readWrite)
 
+        // The guest must be told where its program header table and entry point *are*, which is the
+        // bias-shifted address — the same value the trap handler will see in the program counter.
+        let entryPoint = image.header.entryPoint + bias
         let layout = try InitialStackBuilder(
             geometry: geometry,
             stackTop: stackAddress + UInt64(options.stackSize),
             arguments: options.arguments,
             environment: options.environment,
             image: image,
-            loadBias: 0,
+            loadBias: bias,
             executablePath: options.executablePath,
             randomBytes: randomBytes(count: 16),
-            hardwareCapabilities: 0x1f
+            hardwareCapabilities: 0x1f,
+            executableAddress: entryPoint
         ).build()
         if let destination = UnsafeMutableRawPointer(bitPattern: UInt(layout.bytesBaseAddress)) {
             layout.bytes.withUnsafeBytes { raw in
@@ -193,7 +256,7 @@ final class GuestRunner {
         let heapStart = geometry.roundUpToHostPage(highest)
         let heapLimit = heapStart + 32 * 1024 * 1024
 
-        // --- 4. protections
+        // --- 6. protections
         let protectionPlan = space.hostPageProtectionPlan()
         for change in protectionPlan {
             let result = up_protect(
@@ -210,10 +273,12 @@ final class GuestRunner {
         emit("patched_syscall_sites=\(plan.patchedCount)")
         if options.verbose {
             emit("address_space_report:\n\(space.report())")
-            emit("initial_stack: sp=0x\(String(layout.stackPointer, radix: 16)) argc=\(layout.argc) bytes=\(layout.bytes.count) auxv_entries=\(layout.auxiliaryVector.count)")
+            emit(
+                "initial_stack: sp=0x\(String(layout.stackPointer, radix: 16)) argc=\(layout.argc) bytes=\(layout.bytes.count) auxv_entries=\(layout.auxiliaryVector.count)"
+            )
         }
 
-        // --- 5. run
+        // --- 7. run
         let host = RealGuestHost(space: space, heapStart: heapStart, heapLimit: heapLimit)
         let dispatcher = SyscallDispatcher.standardPhase2()
         let session = GuestSession(dispatcher: dispatcher, host: host)
@@ -222,7 +287,7 @@ final class GuestRunner {
         emit("guest-stdout-begin")
         var status: Int32 = 0
         var reason: Int32 = Int32(UP_EXIT_UNSUPPORTED)
-        let runResult = up_guest_run(image.header.entryPoint, layout.stackPointer, &status, &reason)
+        let runResult = up_guest_run(entryPoint, layout.stackPointer, &status, &reason)
         emit("guest-stdout-end")
 
         let reasonText: String
@@ -239,6 +304,9 @@ final class GuestRunner {
             exitStatus: status,
             syscallCount: dispatcher.trace.total,
             patchedSites: plan.patchedCount,
+            placement: placementName,
+            bias: bias,
+            relativeRelocations: relativeRelocations,
             faultSignal: up_last_fault_signal(),
             faultAddress: up_last_fault_address(),
             trapPC: up_last_trap_pc(),
@@ -251,44 +319,25 @@ final class GuestRunner {
             unimplemented: dispatcher.trace.unknownNumbers.sorted())
     }
 
-    /// Maps the image so that its link-time addresses are valid at run time.
+    /// Maps the image so that `address` is where it actually lands.
     ///
-    /// Two mechanisms, in order, and the one that worked is reported to the caller:
-    ///
-    /// 1. a plain hint. This is the normal path: the runner is linked with a 64 KiB `__PAGEZERO`, so
-    ///    the low 4 GiB — where a Linux executable lives, at 0x400000 — is ordinary mappable memory.
-    /// 2. `MAP_FIXED`, but *only* when the whole image lies inside the host's reserved low region. That
-    ///    region is reserved by the running binary's own `__PAGEZERO` and never holds live data, which is
-    ///    what makes replacing it defensible; anywhere else `MAP_FIXED` would silently discard whatever
-    ///    was mapped there, and the runtime will not do that.
-    private func mapImage(address: UInt64, length: UInt64, highest: UInt64) throws -> String {
+    /// There is exactly one mechanism, a hint, and one rule: the kernel's answer must be the address we
+    /// asked for. A guest address *is* a host address here, so a mapping that lands anywhere else means
+    /// the guest's own pointers point somewhere unintended, and the run is refused rather than
+    /// continued. (`MAP_FIXED` would make the address come true by discarding whatever is already
+    /// there — the runtime never wants that, and on Apple silicon it could not reach the reserved low
+    /// region anyway; the placement decision happens earlier, in portable code.)
+    private func mapImage(address: UInt64, length: UInt64) throws {
         var landed: UInt64 = 0
         guard up_reserve(address, Int(length), Int32(UP_RESERVE_HINT), &landed) != nil else {
             throw RunError.cannotMapImage(
                 address: address, length: length, landedAt: 0, errno: up_last_mapping_errno())
         }
-        if landed == address { return "hint" }
-
-        _ = up_release(landed, Int(length))
-        let reserved = up_reserved_low_region_size()
-        guard reserved > 0, highest <= reserved else {
+        guard landed == address else {
+            _ = up_release(landed, Int(length))
             throw RunError.cannotMapImage(
-                address: address, length: length, landedAt: landed,
-                errno: up_last_mapping_errno())
+                address: address, length: length, landedAt: landed, errno: up_last_mapping_errno())
         }
-
-        landed = 0
-        guard up_reserve(address, Int(length), Int32(UP_RESERVE_REPLACE), &landed) != nil,
-            landed == address
-        else {
-            throw RunError.cannotReplaceReservedLowRegion(
-                address: address, length: length, landedAt: landed,
-                errno: up_last_mapping_errno())
-        }
-        emit(
-            "note=the guest image was mapped over the host's reserved low region (0x0-0x\(String(reserved, radix: 16))); the linker's -pagezero_size did not take effect"
-        )
-        return "replace-reserved-low-region"
     }
 
     private func randomBytes(count: Int) -> Data {

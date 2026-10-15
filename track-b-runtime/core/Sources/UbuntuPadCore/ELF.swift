@@ -234,7 +234,6 @@ extension Data {
         UInt32(readUInt16(at: offset)) | (UInt32(readUInt16(at: offset + 2)) << 16)
     }
 
-    fileprivate func readUInt64(at offset: Int) -> UInt64 {
-        UInt64(readUInt32(at: offset)) | (UInt64(readUInt32(at: offset + 4)) << 32)
-    }
+    // `readUInt64(at:)` lives in Relocations.swift and is internal, so the relocation parser can use
+    // the same reader instead of a second copy of it.
 }

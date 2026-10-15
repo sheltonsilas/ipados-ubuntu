@@ -1,9 +1,9 @@
 # Track B — the native arm64 syscall-translation runtime
 
-**Status: Phase 2.** A static AArch64 **Linux** program is loaded, mapped at its own addresses,
-patched so every `svc #0` reaches our code, and executed **natively on an Apple-silicon host**, with
-the Linux syscalls serviced by our own Swift. What is not done: a dynamically linked program, more
-than one process, threads, signals and a filesystem.
+**Status: Phase 2.** A static, position-independent AArch64 **Linux** program is loaded, placed at a
+base this host allows, relocated, patched so every `svc #0` reaches our code, and executed **natively
+on an Apple-silicon host**, with the Linux syscalls serviced by our own Swift. What is not done: a
+dynamically linked program, more than one process, threads, signals and a filesystem.
 
 ## Layout
 
@@ -11,6 +11,8 @@ than one process, threads, signals and a filesystem.
 core/                          SwiftPM package: builds and tests on Linux AND macOS
   Sources/UbuntuPadCore/       the platform-independent library (no Darwin, no Glibc — CI enforces it)
     ELF.swift                  ELF64/AArch64 header + program header parsing, PT_INTERP
+    ImagePlacement.swift       where an image can live on this host: identity, a bias, or a refusal
+    Relocations.swift          PT_DYNAMIC / .rela.dyn: the relative relocations a biased PIE needs
     CodePatch.swift            finds every `svc` in executable segments and plans the patch
     GuestAddressSpace.swift    4 KiB guest pages over 16 KiB host pages; regions; host-page plan
     InitialStack.swift         the Linux process stack: argc/argv/envp/auxv, AT_PHDR, AT_PAGESZ
@@ -26,15 +28,24 @@ testdata/                      the guest programs: freestanding (raw syscalls) a
 runner-entitlements.plist      used ONLY if the kernel refuses an executable mapping (decision 0015)
 ```
 
-## The design in five steps
+## The design in six steps
 
-1. **Parse** the image; refuse anything that is not static ELF64/AArch64 at a fixed address.
-2. **Map** the image at exactly its link-time addresses. A guest virtual address *is* a host virtual
-   address, so the guest's pointers need no translation (decision 0011).
-3. **Patch**: every `svc #0` becomes `brk #0x123`, planned from the executable `PT_LOAD` contents.
-4. **Protect**: each host page gets the union of the protections of the guest regions inside it, and
+1. **Parse** the image; refuse anything that is not a static ELF64/AArch64 image.
+2. **Place** it: on Apple silicon the low 4 GiB is `__PAGEZERO`, reserved by the kernel for every arm64
+   process, so a normal Linux executable linked at 0x400000 cannot be mapped at its link-time address
+   — not by hinting, and not by forcing (decision 0019). A position-independent image is therefore
+   moved above the floor at a bias that keeps its alignment, and a fixed-address image that would fall
+   inside the reservation is refused with a message saying why and what would work instead.
+3. **Relocate**: the image's own `R_AARCH64_RELATIVE` relocations are applied to the image bytes for
+   that base, which is what makes a biased PIE's data pointers valid. Unsupported types are collected
+   and refused rather than half-applied.
+4. **Map** the image at `bias + link-time address` and **patch** every `svc #0` into `brk #0x123`,
+   planned from the executable `PT_LOAD` contents. A guest virtual address *is* a host virtual
+   address, so the guest's pointers need no translation (decision 0011) — and the mapping must land on
+   the address that was asked for, or the run stops.
+5. **Protect**: each host page gets the union of the protections of the guest regions inside it, and
    the run reports how many pages had to merge (decision 0018).
-5. **Run**: install a SIGTRAP handler on its own stack and branch to the entry point. Each trap is a
+6. **Run**: install a SIGTRAP handler on its own stack and branch to the entry point. Each trap is a
    syscall: the handler reads x8/x0-x5 out of the signal context, lets Swift decide, writes x0, steps
    the program counter past the breakpoint and resumes the guest (decision 0012).
 
@@ -46,9 +57,11 @@ answer rather than assuming it.
 ## How to run it
 
 ```bash
-# 1. cross-compile the guest programs (Linux/macOS with the aarch64 toolchain, or use CI's artifact)
-aarch64-linux-gnu-gcc -static -nostdlib -no-pie -ffreestanding -fno-builtin -O1 \
-  -o /tmp/hello-nostdlib track-b-runtime/testdata/hello-nostdlib.c
+# 1. cross-compile the guest programs (Linux/macOS with the aarch64 toolchain, or use CI's artifact).
+#    -static-pie is not a preference: a fixed-address image cannot be mapped on Apple silicon at all,
+#    so this is the only shape that runs there (decision 0019).
+aarch64-linux-gnu-gcc -static -nostdlib -static-pie -fPIE -ffreestanding -fno-builtin -O1 \
+  -o /tmp/hello-pie-nostdlib track-b-runtime/testdata/hello-pie-nostdlib.c
 
 # 2. build and probe
 cd track-b-runtime/core
@@ -56,11 +69,12 @@ swift build -c release --product ubuntupad-run
 .build/release/ubuntupad-run probe
 
 # 3. run a guest
-.build/release/ubuntupad-run run /tmp/hello-nostdlib
+.build/release/ubuntupad-run run /tmp/hello-pie-nostdlib
 ```
 
 `probe` prints the host page size, whether executable memory is available, and the size of the host's
-reserved low region. `run` prints one fact per line and brackets the guest's own output with
+reserved low region. `run` prints one fact per line — including `image_placement=`, `bias=` and how
+many relocations it applied — and brackets the guest's own output with
 `guest-stdout-begin` / `guest-stdout-end`, which is what CI asserts
 (`tools/assert-guest-run.sh`). `run` is **only meaningful on arm64**; on other architectures it
 reports `exit=unsupported-on-this-host` and exits non-zero rather than pretending.
@@ -72,6 +86,7 @@ cd track-b-runtime/core
 swift test                     # on Linux or macOS
 UBUNTUPAD_TEST_BINARY=/path/to/static-libc-arm64-binary \
 UBUNTUPAD_TEST_NOSTDLIB_BINARY=/path/to/hello-nostdlib \
+UBUNTUPAD_TEST_PIE_BINARY=/path/to/hello-pie-nostdlib \
 swift test
 ```
 
@@ -83,7 +98,8 @@ not just the exit code. `runtime-e2e.yml` sets them and runs the whole thing on 
 | Missing | What happens today |
 | --- | --- |
 | Dynamic linking / `PT_INTERP` | the loader refuses the image and says which interpreter it asked for |
-| ET_DYN (PIE) images | refused; `loadBias` exists in the stack builder but nothing relocates yet |
+| Symbol-based relocations (`R_AARCH64_ABS64`, ...) | reported by number and refused; only `R_AARCH64_RELATIVE` is applied |
+| Relocations into `.bss` | refused: the runtime relocates the image *before* mapping it, so zero-filled bytes cannot be patched |
 | `fork`/`clone`/`execve` | `ENOSYS`, recorded in the trace's `unimplemented=` line |
 | Threads, futexes, signals to the guest | `ENOSYS`; `rt_sigaction` is accepted as a no-op and documented as such |
 | Filesystem (`openat`, `fstat`, `ioctl`, ...) | `ENOSYS` / `ENOTTY`; only a virtual `/` exists for `getcwd` |
