@@ -40,26 +40,10 @@ jobs:
           aarch64-linux-gnu-gcc --version | head -n1
 
       - name: Build the guest programs
-        run: |
-          set -euo pipefail
-          mkdir -p build
-          # -nostdlib: no libc, so every syscall is written out by hand and nothing hides a mistake.
-          # -static-pie: position-independent, which is how Ubuntu ships its own arm64 binaries and the
-          #              only shape that can be placed at a bias. See decision 0019 for why the runtime
-          #              cannot simply map a Linux binary at its link-time address on Apple silicon.
-          common="-static -nostdlib -ffreestanding -fno-builtin -O1"
-          aarch64-linux-gnu-gcc $common -static-pie -fPIE \
-            -o build/hello-pie-nostdlib track-b-runtime/testdata/hello-pie-nostdlib.c
-          aarch64-linux-gnu-gcc $common -static-pie -fPIE \
-            -o build/stack-probe-nostdlib track-b-runtime/testdata/stack-probe-nostdlib.c
-          # The fixed-address (ET_EXEC) build: the runtime must refuse it, with a reason, and CI checks
-          # that it does. It is built here so the refusal is tested against a real binary.
-          aarch64-linux-gnu-gcc $common -no-pie -o build/hello-fixed-nostdlib track-b-runtime/testdata/hello-nostdlib.c
-          # The libc-linked program the ELF parser and patch planner are tested against.
-          aarch64-linux-gnu-gcc -static -O0 -o build/hello-arm64 track-b-runtime/testdata/hello.c
-          file build/*
-          ls -l build
-          sha256sum build/*
+        # One script, shared with `tests.yml` (which tests the loader against these) and `build-ipa.yml`
+        # (which bundles two of them into the app), so the guest CI executes and the guest the owner's
+        # iPad runs cannot drift apart (decision 0020).
+        run: bash tools/build-guest-binaries.sh build
 
       - name: Confirm the freestanding programs have no interpreter and no libc
         run: |

@@ -9,6 +9,11 @@ let package = Package(
     name: "UbuntuPadCore",
     products: [
         .library(name: "UbuntuPadCore", targets: ["UbuntuPadCore"]),
+        // The run pipeline itself, as a library rather than a slice of the CLI, so that the iPad app and
+        // `ubuntupad-run` link the *same* implementation: `GuestRunner`, the host probe and the syscall
+        // session. A second copy of this sequence inside the app would be the copy that is wrong
+        // (decision 0020).
+        .library(name: "UbuntuPadRunner", targets: ["UbuntuPadRunner"]),
         // The Phase 2 test bed: loads a static AArch64 Linux ELF and actually executes it on an
         // aarch64 host. It is a separate executable, not an XCTest bundle, because it must be
         // signed with JIT/executable-memory entitlements in CI — which you cannot do to a test
@@ -20,6 +25,8 @@ let package = Package(
         // Tiny on purpose — the policy lives in Swift, the unavoidable machine code lives here.
         .target(name: "UbuntuPadHost"),
         .target(name: "UbuntuPadCore"),
+        // Links the C shim, so it is Apple-platforms-and-Linux-ABI code that the iOS app can also link.
+        .target(name: "UbuntuPadRunner", dependencies: ["UbuntuPadCore", "UbuntuPadHost"]),
         // NOTE: this target deliberately has no linker settings. Shrinking macOS's 4 GiB __PAGEZERO at
         // link time (`-pagezero_size`) looked like the clean fix for mapping a Linux executable at its
         // own 0x400000, and it links — but the kernel then killed the binary at startup with no output
@@ -29,7 +36,7 @@ let package = Package(
         // (`UbuntuPadCore.ImagePlacement` and `UbuntuPadCore.Relocations`).
         .executableTarget(
             name: "ubuntupad-run",
-            dependencies: ["UbuntuPadCore", "UbuntuPadHost"]
+            dependencies: ["UbuntuPadCore", "UbuntuPadHost", "UbuntuPadRunner"]
         ),
         .testTarget(
             name: "UbuntuPadCoreTests",

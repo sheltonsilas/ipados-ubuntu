@@ -10,7 +10,12 @@ import Glibc
 
 /// Loads a static AArch64 Linux ELF and runs it on the host CPU.
 ///
-/// This is Track B's engine room. The sequence is the whole design in one place:
+/// This is Track B's engine room, and it is a **library** rather than part of the command-line tool
+/// so that the iOS app runs exactly the code CI tests: `ubuntupad-run` and `UbuntuPad.app` both link
+/// this target and neither owns a second copy of the sequence below. The CLI adds argument parsing
+/// and machine-readable output; the app adds a button.
+///
+/// The sequence is the whole design in one place:
 ///
 /// 1. parse the image and plan the patch that turns every Linux `svc #0` into a breakpoint;
 /// 2. decide *where* the image can live on this host (`ImagePlacement`) — this is where the platform's
@@ -27,19 +32,35 @@ import Glibc
 /// Nothing here writes an executable mapping: the text is written while it is writable and made
 /// executable afterwards, so there is never a writable-and-executable page. See
 /// docs/RESEARCH/jit-and-entitlements-on-ios.md for why that matters on a non-jailbroken device.
-final class GuestRunner {
-    struct Options {
-        var executablePath: String
-        var arguments: [String]
-        var environment: [String]
-        var stackSize: Int = 1 << 20
-        var verbose: Bool = false
+public final class GuestRunner {
+    public struct Options {
+        public var executablePath: String
+        public var arguments: [String]
+        public var environment: [String]
+        public var stackSize: Int
+        public var verbose: Bool
         /// Test-only escape hatch: run without the relocation pass, so CI can show that a
         /// position-independent guest *needs* it (the run then faults instead of printing its message).
-        var skipRelocations: Bool = false
+        public var skipRelocations: Bool
+
+        public init(
+            executablePath: String,
+            arguments: [String],
+            environment: [String],
+            stackSize: Int = 1 << 20,
+            verbose: Bool = false,
+            skipRelocations: Bool = false
+        ) {
+            self.executablePath = executablePath
+            self.arguments = arguments
+            self.environment = environment
+            self.stackSize = stackSize
+            self.verbose = verbose
+            self.skipRelocations = skipRelocations
+        }
     }
 
-    enum RunError: Error, CustomStringConvertible {
+    public enum RunError: Error, CustomStringConvertible {
         case cannotReadImage(String)
         case cannotRunOnThisHost(reason: String)
         case relocationFailed(String)
@@ -50,7 +71,7 @@ final class GuestRunner {
         case segmentOutsideImage(name: String)
         case protectionFailed(address: UInt64, length: UInt64)
 
-        var description: String {
+        public var description: String {
             switch self {
             case let .cannotReadImage(description):
                 return "cannot read the guest image: \(description)"
@@ -78,33 +99,35 @@ final class GuestRunner {
         }
     }
 
-    struct Result {
-        var reason: String
-        var exitStatus: Int32
-        var syscallCount: Int
-        var patchedSites: Int
-        var placement: String
-        var bias: UInt64
-        var relativeRelocations: Int
-        var faultSignal: Int32
-        var faultAddress: UInt64
-        var trapPC: UInt64
-        var protectionPages: Int
-        var mergedProtectionPages: Int
-        var addressSpaceReport: String
-        var traceSummary: String
-        var unimplemented: [Int32]
+    /// Everything a caller needs to report what happened. Public because the app shows these facts to
+    /// the owner and CI asserts them, and both go through this one type.
+    public struct Result {
+        public var reason: String
+        public var exitStatus: Int32
+        public var syscallCount: Int
+        public var patchedSites: Int
+        public var placement: String
+        public var bias: UInt64
+        public var relativeRelocations: Int
+        public var faultSignal: Int32
+        public var faultAddress: UInt64
+        public var trapPC: UInt64
+        public var protectionPages: Int
+        public var mergedProtectionPages: Int
+        public var addressSpaceReport: String
+        public var traceSummary: String
+        public var unimplemented: [Int32]
     }
 
     private let options: Options
     private let emit: (String) -> Void
 
-    init(options: Options, emit: @escaping (String) -> Void) {
+    public init(options: Options, emit: @escaping (String) -> Void) {
         self.options = options
         self.emit = emit
     }
 
-    func run() throws -> Result {
+    public func run() throws -> Result {
         guard up_can_run_guest() != 0 else {
             throw RunError.cannotRunOnThisHost(reason: "this CPU cannot execute AArch64 guest code")
         }

@@ -19,6 +19,7 @@
 #include <mach-o/loader.h>
 #include <mach/arm/thread_status.h>
 #include <mach/mach.h>
+#include <os/proc.h>
 #include <setjmp.h>
 #include <signal.h>
 #include <sys/mman.h>
@@ -58,6 +59,16 @@ uint64_t up_total_memory(void) {
         return 0;
     }
     return memory;
+}
+
+/*
+ * The app's remaining memory budget. On iOS this is jetsam's limit, which is the real ceiling for every
+ * guest process this runtime will ever host; on macOS the call answers 0 for an unlimited process, and
+ * the caller reports that as "unknown" rather than as an exhausted budget.
+ */
+uint64_t up_available_memory(void) {
+    size_t available = os_proc_available_memory();
+    return (uint64_t)available;
 }
 
 static int g_mapping_errno = 0;
@@ -352,6 +363,9 @@ size_t up_page_size(void) {
 }
 
 uint64_t up_total_memory(void) { return 0; }
+
+/* No equivalent facility on Linux: report "will not say" rather than inventing a number. */
+uint64_t up_available_memory(void) { return 0; }
 
 static int g_mapping_errno = 0;
 

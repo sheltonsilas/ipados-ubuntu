@@ -1,6 +1,9 @@
 import Foundation
 import UbuntuPadCore
 import UbuntuPadHost
+// The run pipeline itself. It is a library so that the iPad app links exactly this code (decision 0020);
+// this executable adds argument parsing and machine-readable output on top of it and nothing else.
+import UbuntuPadRunner
 
 #if canImport(Darwin)
 import Darwin
@@ -49,51 +52,17 @@ func fail(_ message: String) -> Never {
     exit(2)
 }
 
+/*
+ * The probe is measured by `UbuntuPadRunner.probeHost()` and printed here. The app calls the same
+ * function and shows the same lines, so a pasted device report and a CI log are directly comparable
+ * (decision 0020); this function is only the printing.
+ */
 func probe() -> Int32 {
-    let hostPageSize = Int(up_page_size())
+    let host = probeHost()
     emit("ubuntupad-run: version=\(version)")
     emit("mode=probe")
-    emit("host_page_size=\(hostPageSize)")
-    emit("guest_page_size=4096")
-    emit("total_memory_bytes=\(up_total_memory())")
-    emit("can_run_guest=\(up_can_run_guest())")
-    emit("guest_architecture=aarch64")
-    emit("host_architecture=\(hostArchitecture())")
-    emit("monotonic_nanoseconds=\(up_monotonic_nanoseconds())")
-    emit("wall_clock_nanoseconds=\(up_wall_clock_nanoseconds())")
-
-    // How much of the low address space the running binary reserves. macOS arm64 defaults to 4 GiB,
-    // which would make a Linux executable's usual 0x400000 unmappable; the runner shrinks it at link
-    // time (decision 0015), so this line is the evidence that the flag took effect.
-    emit("reserved_low_region_bytes=\(up_reserved_low_region_size())")
-
-    // Can this process get executable memory for a *static* image? Writing the text before making it
-    // executable is the whole non-JIT strategy, so the probe answers it explicitly instead of leaving
-    // it to be discovered halfway through a guest run.
-    var landed: UInt64 = 0
-    let probeLength = hostPageSize
-    if up_reserve(0, probeLength, Int32(UP_RESERVE_HINT), &landed) != nil {
-        let writeResult = up_protect(landed, probeLength, 0x1 | 0x2)
-        let executeResult = up_protect(landed, probeLength, 0x1 | 0x4)
-        emit("rw_mapping=\(writeResult == 0 ? "ok" : "failed")")
-        emit("rx_mapping=\(executeResult == 0 ? "ok" : "failed")")
-        emit("write_execute_mapping=\(up_protect(landed, probeLength, 0x1 | 0x2 | 0x4) == 0 ? "ok" : "refused")")
-        _ = up_release(landed, probeLength)
-    } else {
-        emit("rw_mapping=failed")
-        emit("rx_mapping=unknown")
-    }
+    for line in host.render() { emit(line) }
     return 0
-}
-
-func hostArchitecture() -> String {
-    #if arch(arm64)
-    return "arm64"
-    #elseif arch(x86_64)
-    return "x86_64"
-    #else
-    return "unknown"
-    #endif
 }
 
 func runGuest(arguments: [String]) -> Int32 {

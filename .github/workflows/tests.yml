@@ -44,27 +44,14 @@ jobs:
         working-directory: track-b-runtime/core
         run: swift test
 
-      - name: Cross-compile real arm64 Ubuntu binaries for the loader tests
+      - name: Cross-compile real arm64 Linux binaries for the loader tests
+        # The same script `runtime-e2e.yml` executes and `build-ipa.yml` bundles, so a test can never be
+        # run against a differently-built guest than the platform tests (decision 0020).
         run: |
           set -euo pipefail
           sudo apt-get update -qq
           sudo apt-get install -y -qq gcc-aarch64-linux-gnu
-          mkdir -p build
-          # A libc-linked static program: the "real Ubuntu binary" for the ELF parser and patch planner.
-          aarch64-linux-gnu-gcc -static -O0 -o build/hello-arm64 track-b-runtime/testdata/hello.c
-          # Freestanding programs: no libc, every syscall written out by hand, exactly two svc sites
-          # each. These are the images the end-to-end run executes (runtime-e2e.yml).
-          common="-static -nostdlib -ffreestanding -fno-builtin -O1"
-          # The position-independent build is the one that can actually be placed at a bias, and its
-          # global pointer gives the relocation pass real work to do (decision 0019).
-          aarch64-linux-gnu-gcc $common -static-pie -fPIE \
-            -o build/hello-pie-nostdlib track-b-runtime/testdata/hello-pie-nostdlib.c
-          # The fixed-address build: a real ET_EXEC image, which the runtime must refuse on Apple
-          # silicon. Building it here keeps that refusal tested against toolchain output on Linux too.
-          aarch64-linux-gnu-gcc $common -no-pie -o build/hello-fixed-nostdlib track-b-runtime/testdata/hello-nostdlib.c
-          aarch64-linux-gnu-gcc $common -no-pie -o build/stack-probe-nostdlib track-b-runtime/testdata/stack-probe-nostdlib.c
-          file build/*
-          ls -l build
+          bash tools/build-guest-binaries.sh build
 
       - name: Loader, patch planner and stack builder against real arm64 binaries
         working-directory: track-b-runtime/core

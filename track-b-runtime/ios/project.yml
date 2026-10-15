@@ -31,9 +31,23 @@ targets:
       gatherCoverageData: false
     sources:
       - path: UbuntuPad
+      # The arm64 *Linux* guest programs the app runs (decision 0020). They are build output, produced by
+      # tools/build-guest-binaries.sh and dropped here by build-ipa.yml before this spec is generated, so
+      # `optional: true` keeps a local `xcodegen generate` working without them — the app then reports
+      # that the bundle has no guest program instead of failing to build.
+      - path: Guest/hello-pie-nostdlib
+        buildPhase: resources
+        optional: true
+      - path: Guest/stack-probe-nostdlib
+        buildPhase: resources
+        optional: true
     dependencies:
       - package: UbuntuPadCore
         product: UbuntuPadCore
+      # The run pipeline itself, in a library, so the app links the code runtime-e2e.yml executes
+      # rather than a second copy of it (decision 0020).
+      - package: UbuntuPadCore
+        product: UbuntuPadRunner
     entitlements:
       path: UbuntuPad/UbuntuPad.entitlements
       properties:

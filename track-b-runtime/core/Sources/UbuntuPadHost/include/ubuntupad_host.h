@@ -53,6 +53,16 @@ size_t up_page_size(void);
 uint64_t up_total_memory(void);
 
 /*
+ * How much this process may still allocate before the system's limit applies: 0 when the host will not
+ * say (macOS reports 0 for a process that is not under a memory limit, and Linux has no such facility).
+ *
+ * Track B's whole guest tree lives inside one app, so the app's limit *is* the system's memory budget.
+ * Apple documents `os_proc_available_memory()` as the way to ask for it and explicitly refuses to
+ * promise a number, which is exactly why the runtime reports the answer instead of assuming one.
+ */
+uint64_t up_available_memory(void);
+
+/*
  * Reserves `length` bytes of anonymous, readable and writable memory, asking for `address`.
  *
  *   UP_RESERVE_HINT  the address is a hint. If it is occupied the mapping lands elsewhere and

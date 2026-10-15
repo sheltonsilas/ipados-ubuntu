@@ -22,6 +22,7 @@ required_files=(
   docs/LOG.md
   docs/SETUP.md
   docs/RESEARCH/README.md
+  docs/TRACK-B-PLAN.md
   track-a-utm/README.md
   track-a-utm/ci/ubuntupad-ios.yml
   track-a-utm/tools/push-fork-ci.sh
@@ -33,6 +34,8 @@ required_files=(
   track-b-runtime/testdata/hello-pie-nostdlib.c
   track-b-runtime/testdata/stack-probe-nostdlib.c
   tools/assert-guest-run.sh
+  tools/build-guest-binaries.sh
+  track-b-runtime/ios/Guest/README.md
   .github/workflows/build-ipa.yml
   .github/workflows/tests.yml
   .github/workflows/runtime-e2e.yml

@@ -17,9 +17,11 @@ enum DeviceFacts {
             deviceModel: machineIdentifier(),
             pageSizeBytes: pageSize,
             physicalMemoryBytes: ProcessInfo.processInfo.physicalMemory,
+            // This type reports facts it can read; whether the app may *execute* memory it wrote is
+            // measured by `UbuntuPadRunner.probeHost()` and filled in by the screen, which is why the
+            // value here is the honest "not probed by this type" rather than a guess.
             jit: .notProbed,
             notes: [
-                "jit probe not implemented yet (phase 2)",
                 "host page size \(pageSize / 1024) KiB; Track B guest page model is a software 4 KiB",
                 "no process can be spawned on iOS; Track B guest processes live inside this app",
             ]

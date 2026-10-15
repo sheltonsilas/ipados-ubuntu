@@ -12,6 +12,11 @@ UbuntuPad.xcodeproj/
 track-b-runtime/ios/UbuntuPad/Info.plist
 track-b-runtime/ios/UbuntuPad/UbuntuPad.entitlements
 
+# The cross-compiled arm64 Linux guest programs CI drops into the app bundle (decision 0020). They are
+# build output: `tools/build-guest-binaries.sh` produces them and `build-ipa.yml` fetches the artifact.
+track-b-runtime/ios/Guest/hello-pie-nostdlib
+track-b-runtime/ios/Guest/stack-probe-nostdlib
+
 # SwiftPM
 .swiftpm/
 .build/

@@ -21,12 +21,50 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # The app bundles a real arm64 *Linux* guest program, and only Linux has the cross toolchain. This job
+  # is the cheapest possible producer of it: the same script runtime-e2e.yml executes, so the program
+  # the owner's iPad runs is the one CI has already proven runs (decision 0020).
+  guest-programs:
+    name: Cross-compile the guest program (ubuntu-24.04)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the aarch64 cross toolchain
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gcc-aarch64-linux-gnu
+
+      - name: Build the guest programs
+        run: bash tools/build-guest-binaries.sh build
+
+      - name: Upload the two the app bundles
+        uses: actions/upload-artifact@v4
+        with:
+          name: guest-programs
+          # Only these two: the app's run button offers the hello and the stack probe. The artifact root
+          # keeps the file names, so the download lands them at ios/Guest/<name> unchanged.
+          path: |
+            build/hello-pie-nostdlib
+            build/stack-probe-nostdlib
+          if-no-files-found: error
+          retention-days: 90
+
   ipa:
     name: Unsigned IPA (macos-15)
+    needs: guest-programs
     runs-on: macos-15
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+
+      - name: Fetch the guest programs the app carries
+        uses: actions/download-artifact@v4
+        with:
+          name: guest-programs
+          path: track-b-runtime/ios/Guest
 
       - name: Toolchain versions
         run: |
@@ -122,9 +160,13 @@ jobs:
           body: |
             Rolling unsigned IPA built from `main` at commit ${{ github.sha }}.
 
-            **This app is at Phase 0: it opens a diagnostics screen. There is no Linux runtime in
-            it yet.** Sideload it with AltStore, SideStore, Sideloadly or TrollStore. Never install
-            an unsigned IPA from a source you do not trust.
+            This build opens the diagnostics screen and carries a real arm64 **Linux** guest program,
+            which the app loads and executes with Linux system calls serviced by our own code (Track B,
+            Phase 2). Press **Run** to try it; the screen also measures whether this device allows the
+            app to execute code it wrote, which is the one thing that cannot be checked in CI. Until the
+            owner reports back from a real iPad, every iOS claim in the docs is **unverified on
+            device**. Sideload with AltStore, SideStore, Sideloadly or TrollStore. Never install an
+            unsigned IPA from a source you do not trust.
 
             How to install: see docs/SETUP.md in the repository.
           files: |
