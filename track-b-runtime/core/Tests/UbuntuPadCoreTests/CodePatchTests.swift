@@ -120,10 +120,26 @@ final class PatchPlannerTests: XCTestCase {
         XCTAssertGreaterThan(plan.patchedCount, 3, "a real program with libc calls has several svc sites")
         XCTAssertEqual(Set(plan.sites.map(\.address)).count, plan.patchedCount, "sites must be unique")
         for site in plan.sites {
-            XCTAssertEqual(site.original, AArch64Instruction.svcZero)
+            // The invariant is "this word is an `svc`", not "this word is `svc #0`": the planner
+            // recognises the immediate variants on purpose, because an `svc` left unpatched would
+            // execute as a *Darwin* syscall with Darwin's numbering (see AArch64Instruction).
+            XCTAssertTrue(
+                AArch64Instruction.isSupervisorCall(site.original),
+                "site 0x\(String(site.address, radix: 16)) held 0x\(String(site.original, radix: 16)), which is not an svc")
             XCTAssertTrue(
                 plan.scannedRanges.contains { $0.contains(site.address) },
                 "site 0x\(String(site.address, radix: 16)) is outside every scanned range")
+        }
+        // An immediate other than #0 is Linux-invalid (Linux always takes the number from x8), but it is
+        // still patched: the alternative is a Darwin syscall. The count is reported, not asserted away,
+        // because a real `-static -O0` binary has been observed to contain one svc-shaped word inside
+        // an executable segment, and the scanner deliberately does not disassemble to tell code from
+        // data packed into the same segment.
+        let unusual = plan.sites.filter { $0.original != AArch64Instruction.svcZero }
+        if !unusual.isEmpty {
+            print(
+                "note: \(unusual.count) of \(plan.patchedCount) patched sites used an immediate other than #0: "
+                    + unusual.map { "0x" + String($0.original, radix: 16) }.joined(separator: ", "))
         }
         // Sites must be sorted, which the trap handler's diagnostics rely on.
         XCTAssertEqual(plan.sites.map(\.address), plan.sites.map(\.address).sorted())

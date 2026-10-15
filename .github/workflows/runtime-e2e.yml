@@ -109,9 +109,11 @@ jobs:
       - name: Confirm the position-independent hello needs a relocation
         run: |
           set -euo pipefail
-          relocations=$(aarch64-linux-gnu-readelf -r build/hello-pie-nostdlib | grep -c 'R_AARCH64_RELATIVE' || true)
+          # -W (wide) matters: the narrow output truncates the type name to "R_AARCH64_RELATIV", which
+          # makes a substring search for the full name fail while the relocation is plainly there.
+          aarch64-linux-gnu-readelf -rW build/hello-pie-nostdlib | head -n 20
+          relocations=$(aarch64-linux-gnu-readelf -rW build/hello-pie-nostdlib | grep -c 'R_AARCH64_RELATIVE' || true)
           echo "build/hello-pie-nostdlib has $relocations R_AARCH64_RELATIVE relocation(s)"
-          aarch64-linux-gnu-readelf -r build/hello-pie-nostdlib | head -n 20
           # If the compiler ever folds this pointer away, the end-to-end test stops proving anything:
           # the runtime's relocation pass would have nothing to do and the control run would pass too.
           if [ "$relocations" -lt 1 ]; then
