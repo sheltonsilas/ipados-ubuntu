@@ -13,13 +13,13 @@ of the owner. Track B is otherwise at Phase 2's end: what remains is Phase 3 (pr
 Track A is parked by the owner's decision (its blocker was `gstreamer.freedesktop.org`, not UTM's code).
 The complete Track B plan is [TRACK-B-PLAN.md](TRACK-B-PLAN.md).
 
-## Last app/runner evidence — commit `9ac42a5`; latest all-green CI on `4918a9e` (process-table tests included)
+## Latest all-green CI — commit `57481af` (the app artifact is from the `4918a9e` build)
 
 | Item | State | Evidence |
 | --- | --- | --- |
-| `tests` (unit tests, layout, hygiene) | **Passing** | run [38766109576](https://github.com/sheltonsilas/ipados-ubuntu/actions/runs/38766109576) — both jobs success; process table adds 10 tests, 115 total passed |
-| `runtime-e2e` (execute a Linux guest on Apple silicon) | **Passing** | run [38766109482](https://github.com/sheltonsilas/ipados-ubuntu/actions/runs/38766109482) — "all guest-run assertions passed" |
-| `build-ipa` (unsigned IPA) | **Passing** | run [38766109564](https://github.com/sheltonsilas/ipados-ubuntu/actions/runs/38766109564) — guest-programs, ipa and release jobs all success |
+| `tests` (unit tests, layout, hygiene) | **Passing** | run [38766817529](https://github.com/sheltonsilas/ipados-ubuntu/actions/runs/38766817529) — both jobs success; process table adds 10 tests, 115 total passed |
+| `runtime-e2e` (execute a Linux guest on Apple silicon) | **Passing** | run [38766817556](https://github.com/sheltonsilas/ipados-ubuntu/actions/runs/38766817556) — "all guest-run assertions passed" |
+| `build-ipa` (unsigned IPA) | **Passing** | run [38766817454](https://github.com/sheltonsilas/ipados-ubuntu/actions/runs/38766817454) — guest-programs, ipa and release jobs all success |
 | Guest's stdout from guest code | Verified | `hello from a position-independent aarch64 linux`, between the runner's markers, `exit=normal status=0` |
 | Placement and relocation | Verified | `image_mapping=biased attempt=1 bias=0x7000000000`, `relative_relocations=1 applied=1`; with `--skip-relocations` the same guest prints nothing and faults |
 | A fixed-address image is refused, with a reason | Verified | the refusal names `0x400000` and says a position-independent build would run |
@@ -28,7 +28,7 @@ The complete Track B plan is [TRACK-B-PLAN.md](TRACK-B-PLAN.md).
 | **A Linux program inside the app bundle** | Verified | `verify-ipa.sh`: `ok: …/Payload/UbuntuPad.app/hello-pie-nostdlib is a static AArch64 Linux PIE (67880 bytes)` and the stack probe (67904 bytes) |
 | **The app's guest is the one CI executed** | Verified | identical BuildIDs: `7717885b…` (hello) and `d7f2ccc6…` (stack probe) in both the `runtime-e2e` run and the extracted IPA |
 | **The app builds with the runtime linked** | Verified | `build-ipa` compiles `UbuntuPadRunner` and `UbuntuPadHost` for `iphoneos` (target `arm64-apple-ios16.0` after the platform declaration) and produces the app |
-| Downloadable artifact refreshed | Verified | `nightly` release asset `UbuntuPad-unsigned.ipa`, 226,966 bytes + `.sha256`, uploaded 2026-10-15T15:15:39Z |
+| Downloadable artifact refreshed | Verified | `nightly` release asset `UbuntuPad-unsigned.ipa`, 232,340 bytes + `.sha256`, uploaded 2026-10-15T16:12:55Z (commit `4918a9e`; the later `57481af` change only updates docs) |
 | The runtime running **on a real iPad** | **Unverified on device** | nobody has installed this build yet; the checklist is in [SETUP.md](SETUP.md) |
 | Whether the iPad lets the app execute pages it wrote | **Unverified on device** | this is what the app's probe reports; CI cannot answer it |
 
@@ -40,8 +40,8 @@ iOS". Only the owner's paste of the diagnostics block closes that gap.
 
 - **No device test of anything.** The probe reports whether `mprotect(PROT_EXEC)` accepts a permission
   change, which is not proof the CPU can execute the bytes. Only a successful guest run proves that; the
-  app now reports `jit: enabled` only after a guest completes normally. The device test is still
-  unverified and the answer may be refused on an unentitled iPad.
+  app labels JIT `enabled` only after a guest completes normally. The device test is still unverified
+  and execution may be refused on an unentitled iPad.
 - Track A is **parked**. Its last fork run (38746321359) was never read; the GStreamer pre-fetch fix is
   in `track-a-utm/ci/ubuntupad-ios.yml` and unproven.
 - B3 is **started, not complete**: the first portable process-table slice models clone sharing,

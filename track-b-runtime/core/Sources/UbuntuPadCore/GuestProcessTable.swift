@@ -14,10 +14,16 @@ public struct GuestCloneFlags: OptionSet, Equatable, Sendable {
     public static let thread = GuestCloneFlags(rawValue: 0x0001_0000)
     public static let setTLS = GuestCloneFlags(rawValue: 0x0008_0000)
 
+    /// This first slice models only the sharing/TLS subset above. Other Linux clone flags alter signal,
+    /// pidfd, vfork, namespace or TID-store behavior; until those semantics exist, they must be refused
+    /// rather than silently accepted and ignored.
+    public static let supported: GuestCloneFlags = [.vm, .filesystem, .files, .sighand, .thread, .setTLS]
+
     /// Linux requires these implications; reject malformed requests rather than quietly changing the
-    /// guest's process semantics.
+    /// guest's process semantics. Unknown flags are not valid just because they fit in an OptionSet.
     public var isValid: Bool {
-        (!contains(.thread) || (contains(.vm) && contains(.sighand)))
+        rawValue & ~Self.supported.rawValue == 0
+            && (!contains(.thread) || (contains(.vm) && contains(.sighand)))
             && (!contains(.sighand) || contains(.vm))
     }
 }

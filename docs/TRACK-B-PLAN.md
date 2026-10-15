@@ -46,7 +46,9 @@ An iOS app cannot create processes, so every Linux process lives **inside** the 
   `GuestAddressSpace`; tasks in one `CLONE_VM` group share it.
 - **`clone`** is modelled, not forwarded: `CLONE_VM` shares the address space, `CLONE_FILES` shares the
   fd table, `CLONE_FS` shares cwd/root, and `CLONE_SIGHAND` shares dispositions (with Linux's required
-  flag dependencies validated); `CLONE_THREAD` joins the thread group. A host pthread starts the child.
+  flag dependencies validated);  `CLONE_THREAD` joins the thread group. All other flags (vfork, namespace, pidfd, TID stores, etc.) are
+  refused until their semantics are implemented — the first `GuestProcessTable` slice enumerates its
+  supported subset and does not silently ignore a flag. A host pthread starts the child.
   Without `CLONE_VM` the child gets a **copy** of the parent's address space (see 1.3 — with native
   execution there is no lazy copy-on-write to be had).
 - **`fork` is `clone` without `CLONE_VM`**, exactly as iSH does it: only the calling thread survives

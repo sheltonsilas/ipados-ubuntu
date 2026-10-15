@@ -81,6 +81,16 @@ final class GuestProcessTableTests: XCTestCase {
         XCTAssertEqual(table.tasks.count, 1)
     }
 
+    func testUnsupportedCloneBitsAreRejectedRatherThanIgnored() {
+        var table = GuestProcessTable(rootPID: 1)
+        let unsupported: GuestCloneFlags = [.vm, GuestCloneFlags(rawValue: 0x0000_2000)] // CLONE_VFORK
+        XCTAssertFalse(unsupported.isValid)
+        XCTAssertThrowsError(try table.clone(parent: 1, flags: unsupported)) { error in
+            XCTAssertEqual(error as? GuestProcessError, .invalidCloneFlags(unsupported.rawValue))
+        }
+        XCTAssertEqual(table.tasks.count, 1)
+    }
+
     func testUnknownAndExitedParentsAreRejected() throws {
         var table = GuestProcessTable(rootPID: 3)
         XCTAssertThrowsError(try table.clone(parent: 9, flags: [])) {
