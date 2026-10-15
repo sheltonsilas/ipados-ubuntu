@@ -614,3 +614,113 @@ is testable on Linux, where the floor does not exist:
 - Still open: a real Ubuntu binary is dynamically linked, so `PT_INTERP` and symbol relocations remain
   Phase 4 work. This decision is what makes *static* PIE images — and therefore the whole path to real
   programs — runnable at all.
+
+---
+
+## 0020 — The run pipeline is a library, and the app carries a guest program CI has verified
+
+**Date:** 2026-10-15 · **Status:** accepted, phase 2 (B2 of the Track B plan)
+
+**Context.** Phase 2's exit criterion is met *on a macOS runner*, and Phase 2's remaining checkbox is
+"the same binary runs inside the iOS app". Until that happens, nothing about this project has touched an
+iPad, and the whole design — especially the question of whether an unsigned, non-jailed app can execute
+pages it wrote — is unverified on the platform it exists for.
+
+Two things stood in the way:
+
+- The run pipeline lived in the `ubuntupad-run` **executable** target, so the app could link the parser
+  and the syscall policy but not the part that actually runs a guest. A second copy of that pipeline in
+the app would be a second thing to keep in step, and it is the copy that would be wrong.
+- The app had no guest binary to run. The CI guests are cross-compiled on Linux (`aarch64-linux-gnu-gcc`)
+  and only CI has that toolchain; the app bundle is built on `macos-15`.
+
+**Options.**
+
+1. Duplicate the run sequence in the app. Two implementations of the most delicate code in the project.
+2. Keep the CLI only, and tell the owner to wait for Phase 3/4. Leaves the platform question unanswered
+   for months, which is the worst outcome available.
+3. **Extract the pipeline into a library target (`UbuntuPadRunner`) that the CLI and the app both link**,
+   and give the app bundle a **cross-compiled guest program that `build-ipa` produces and verifies**.
+
+**Choice:** option 3.
+
+**Consequences.**
+
+- `UbuntuPadRunner` holds `GuestRunner` and `GuestSession` and is a `.library` product;
+  `ubuntupad-run` is now a thin CLI over it (argument parsing plus machine-readable output), and
+  `UbuntuPad.app` links the same product. There is exactly one implementation of the sequence in
+  §1 of the plan, and it is exercised by `runtime-e2e` on every push.
+- `tools/build-guest-binaries.sh` becomes the single place the guest programs are cross-compiled, called
+  by both `runtime-e2e.yml` (which executes them) and `build-ipa.yml` (which bundles two of them). The
+  compile flags for a runnable guest — `-static -nostdlib -static-pie -fPIE` — exist in one file, so a
+  change cannot make the CI guest differ from the shipped one.
+- `build-ipa.yml` gains a small `ubuntu-24.04` job whose only output is those binaries, and the macOS job
+  downloads that artifact into the app's resource directory *before* `xcodegen generate`. The project
+  spec marks the resource `optional: true`, so generating the project on a machine without the artifact
+  still works (the app then says the guest is not bundled, which is a real state a developer sees).
+- `tools/verify-ipa.sh` now **proves the guest is inside the artifact**: it extracts the `.ipa`, finds
+  the guest program in the app bundle and parses its ELF header — AArch64, 64-bit, ET_DYN, no `PT_INTERP`
+  — because those are exactly the properties the runtime refuses to run without. A packaging mistake or a
+  wrong-toolchain binary fails the build instead of reaching the owner's iPad.
+- The app gains a **run button** and a **memory probe**, and both results go into the copyable  diagnostics block. This is the first device-visible Track B result and the first real answer to the
+  JIT question: Apple documents that writable-and-executable pages need an Apple-only entitlement, our
+  design never asks for one (text is written while writable, then made executable), and whether that
+  survives on a non-jailbroken iPad is now something the app *measures* rather than something we assume
+  ([RESEARCH/jit-and-entitlements-on-ios.md](RESEARCH/jit-and-entitlements-on-ios.md)).
+- Honesty rule that this decision is subject to: until the owner reports back, every iOS statement is
+  labelled **unverified on device**, and the diagnostics screen says what the app measured, not what we
+  hope.
+
+---
+
+## 0021 — The guest process model: one guest task per host thread, and an eager address-space copy
+
+**Date:** 2026-10-15 · **Status:** accepted as the design for milestone B3 (not yet implemented)
+
+**Context.** An iOS app cannot create processes, so every Linux process has to live inside the app — but
+Track B executes guest code **natively**, which changes what a process model can rely on. The prior art
+was surveyed again before writing this down ([RESEARCH/process-model-without-fork.md](RESEARCH/process-model-without-fork.md)):
+
+iSH maps Linux processes to iOS threads, routes `fork` through its `clone` path, copies the guest `mm`
+when `CLONE_VM` is absent, and starts tasks with `pthread_create`. QEMU linux-user warns that forwarding
+arbitrary `clone` flags to the host confuses libc and therefore classifies flag combinations instead.
+gVisor's platforms need seccomp/KVM/ptrace, none of which exist here. WSL 1 has Windows kernel
+infrastructure behind it that an app cannot reproduce.
+
+**Options.**
+
+1. Forward `clone` flags to the host `pthread_create`/`fork`. Impossible (no `fork`) and wrong (host
+   threads share one address space and one libc).
+2. Interpret (or JIT) guest instructions so that every guest write can be trapped, which would make
+   lazy copy-on-write possible. That is a different, much larger project, and it throws away the reason
+   Track B exists (native speed on the same ISA).
+3. **A guest process table in the portable core, one host pthread per guest task, `clone` flags
+   classified and modelled, and private regions copied eagerly on a non-`CLONE_VM` clone.**
+
+**Choice:** option 3.
+
+**Consequences.**
+
+- A guest task's CPU state *is* the host thread's registers (we execute natively), so there is no
+  interpreter state to save and no context-switch machinery to invent. What the core owns is the
+  guest-visible metadata: PID/TID, address space, descriptor table, signal dispositions (process-wide),
+  signal mask and pending set (per task), and parent/child relationships with exit state for `wait`.
+- **Eager copy is the price of native execution**, and it is stated as such: because guest writes go
+  through ordinary host pointers, a software page table cannot see them, so a child's private mappings
+  are copied (`mmap` + copy of the live bytes) while read-only and shared mappings are shared. iSH can be
+  lazy only because its interpreter sees every write. A hardware write barrier (mprotect read-only,
+  catch the fault, copy, resume) stays an option to be *measured* in B3, not the design.
+- `fork` is `clone` without `CLONE_VM`, with Linux's rules kept exactly: only the calling thread survives
+  into the child, pending signals start empty, the PID differs. `fork`+`execve` is special-cased to build
+  the new image before committing, so the PID and most descriptors survive as shells expect.
+- `CLONE_SETTLS` maps onto the host thread's own thread pointer, so per-thread TLS works without
+  emulating `TPIDR_EL0` at all — one of the few places native execution is *easier* than interpreting.
+- Descriptor tables are duplicated on fork and reference-counted open-file descriptions, so pipe EOF and
+  `EPIPE` behave; a blocking `wait4` sleeps on guest state, never on a host `waitpid` that has nothing to
+  wait for.
+- Address-space isolation is a property of our tables, not of the hardware: threads share one host
+  address space, so two guest processes cannot hold different host memory at the same guest address. The
+  runtime therefore validates every guest buffer against the *calling* task's mappings (0011), and that
+  is the isolation it can honestly promise.
+
+---

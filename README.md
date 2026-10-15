@@ -14,7 +14,8 @@ account, no paid services, no App Store.
    emulates an arm64 Ubuntu VM with a lightweight XFCE/LXQt desktop.
 3. **Track B** (the long-term goal): a native runtime that loads Ubuntu arm64 ELF binaries and
    runs them directly on the iPad CPU, translating Linux system calls in our own code — the same
-   idea as WSL1, iSH and gVisor, but for arm64 on iOS.
+   idea as WSL1, iSH and gVisor, but for arm64 on iOS. It already runs a real arm64 **Linux**
+   program in CI and inside the app; the whole plan is [docs/TRACK-B-PLAN.md](docs/TRACK-B-PLAN.md).
 4. Both tracks are built in CI into unsigned IPAs published on the
    [Releases page](https://github.com/sheltonsilas/ipados-ubuntu/releases).
 5. Track A always stays working, so there is a usable app even while Track B is unfinished.
@@ -44,6 +45,7 @@ Step-by-step, non-technical instructions for the project owner: [docs/SETUP.md](
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Phases with checkboxes |
 | [docs/DECISIONS.md](docs/DECISIONS.md) | Numbered design decisions with alternatives |
 | [docs/LOG.md](docs/LOG.md) | Dated session log, newest first |
+| [docs/TRACK-B-PLAN.md](docs/TRACK-B-PLAN.md) | Track B's complete plan: design problems, milestones, exit criteria, risks |
 | [docs/RESEARCH/](docs/RESEARCH) | Notes on prior art (UTM, iSH, gVisor, FEX, WSL1, Husk) |
 | [docs/SETUP.md](docs/SETUP.md) | Tokens, sideloading, JIT, owner checklist |
 | [track-a-utm/](track-a-utm) | Track A: the UTM-based baseline |

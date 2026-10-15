@@ -3,6 +3,9 @@
 Phases are **never deleted**, only updated. A phase is finished only when its exit criteria pass
 in CI (device-only criteria are marked and stay open until the owner reports on a real iPad).
 
+Track B's detailed plan — the design problems, the order of work and the milestone exit criteria that
+sit behind Phases 2-5 below — is [TRACK-B-PLAN.md](TRACK-B-PLAN.md). This file stays the checklist.
+
 ## Phase 0 — Foundation
 
 - [x] Public repository, GPL-2.0-or-later license, docs skeleton
@@ -55,19 +58,26 @@ desktop and reports back; boot time is written into STATUS.md.
       `AT_PAGESZ` = 4096 on a 16 KiB host) built in the portable core and parsed back by tests
 - [x] Decide and document the capture mechanism: rewrite `svc` to a breakpoint and handle SIGTRAP
       (decision 0012) — no generated code, no writable+executable pages
-- [ ] A static position-independent arm64 "hello" runs end to end in CI and its stdout is asserted —
-      implemented, with a control run (`--skip-relocations`) and a refusal test; awaiting a green
-      `runtime-e2e` run on `macos-15` (see STATUS.md)
-- [ ] The same binary runs inside the iOS app (unverified on device until tested)
-- [ ] `fork`/`clone`/exec of a second process
+- [x] A static position-independent arm64 "hello" runs end to end in CI and its stdout is asserted —
+      green on `macos-15`, with a control run (`--skip-relocations`) proving the relocation pass is
+      load-bearing and a refusal test for a fixed-address image (run 38745174715)
+- [ ] The same binary runs inside the iOS app. **Implemented** — the run pipeline is a library
+      (`UbuntuPadRunner`) the app links, the app bundle carries a cross-compiled guest that
+      `build-ipa` verifies inside the IPA, and the screen has a Run button and a memory probe — but
+      **unverified on device** until the owner installs it and reports back
+- [ ] `fork`/`clone`/exec of a second process — designed in decision 0021 and
+      [TRACK-B-PLAN.md](TRACK-B-PLAN.md) §1.2 (one guest task per host thread, modelled `clone` flags,
+      eager address-space copy because guest writes cannot be trapped under native execution)
 
-**Exit criteria:** CI runs a static arm64 ELF end to end and asserts its stdout.
+**Exit criteria:** CI runs a static arm64 ELF end to end and asserts its stdout. **Met on 2026-10-15**
+(commit `25eb56e`, `runtime-e2e` run 38745174715).
 
 ## Phase 3 — Shell and userland
 
 - [ ] Busybox running, then bash
 - [ ] Processes, pipes, signals, pseudo-terminals
-- [ ] `fork`/`clone` strategy implemented and documented
+- [ ] `fork`/`clone` strategy implemented and documented (decision 0021 is the strategy; the
+      implementation is milestone B3 in [TRACK-B-PLAN.md](TRACK-B-PLAN.md))
 - [ ] Terminal view in the iOS app with keyboard input
 
 **Exit criteria:** CI runs a shell script (pipes, redirection, exit codes) inside the runtime.

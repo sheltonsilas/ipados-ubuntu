@@ -2,8 +2,13 @@
 
 **Status: Phase 2.** A static, position-independent AArch64 **Linux** program is loaded, placed at a
 base this host allows, relocated, patched so every `svc #0` reaches our code, and executed **natively
-on an Apple-silicon host**, with the Linux syscalls serviced by our own Swift. What is not done: a
-dynamically linked program, more than one process, threads, signals and a filesystem.
+on an Apple-silicon host**, with the Linux syscalls serviced by our own Swift. The iPad app links the
+same code and carries the same guest program, so the pipeline CI asserts is the one the owner can run
+by pressing a button. What is not done: a dynamically linked program, more than one process, threads,
+signals and a filesystem.
+
+The plan for all of it — the six design problems, the milestones and what could kill them — is
+[docs/TRACK-B-PLAN.md](../docs/TRACK-B-PLAN.md).
 
 ## Layout
 
@@ -20,10 +25,15 @@ core/                          SwiftPM package: builds and tests on Linux AND ma
     SyscallDispatch.swift      the syscall *policy*: registers, errno, outcomes, trace, dispatcher
     Diagnostics.swift          the report an owner pastes into a GitHub issue
   Sources/UbuntuPadHost/       the C shim: mmap primitives, the guest entry trampoline, the SIGTRAP
-                               handler (host.c). This is the only place machine-level code lives.
-  Sources/ubuntupad-run/       the executable that actually runs a guest (see below)
+                               handler, the host probe (host.c). The only place machine-level code lives.
+  Sources/UbuntuPadRunner/     the run pipeline as a **library**: GuestRunner (the seven steps below),
+                               the syscall session, and HostProbe. Linked by both the CLI and the app,
+                               so there is exactly one implementation (decision 0020).
+  Sources/ubuntupad-run/       the command-line tool: argument parsing and machine-readable output on
+                               top of UbuntuPadRunner, which is what CI asserts
   Tests/UbuntuPadCoreTests/    unit tests, including real cross-compiled arm64 binaries
-ios/                           the iOS shell (SwiftUI + XcodeGen spec) — not wired to the runtime yet
+ios/                           the iPad app (SwiftUI + XcodeGen spec): it links UbuntuPadRunner, bundles
+                               a guest program in ios/Guest/ and runs it behind a button
 testdata/                      the guest programs: freestanding (raw syscalls) and libc-linked
 runner-entitlements.plist      used ONLY if the kernel refuses an executable mapping (decision 0015)
 ```
@@ -71,6 +81,17 @@ swift build -c release --product ubuntupad-run
 # 3. run a guest
 .build/release/ubuntupad-run run /tmp/hello-pie-nostdlib
 ```
+
+### The same program, on the iPad
+
+`ios/project.yml` links the `UbuntuPadRunner` product and bundles two of the guest programs from
+`ios/Guest/` — the same files `tools/build-guest-binaries.sh` produces for CI, fetched as an artifact by
+`build-ipa.yml`, which also verifies they are really inside the `.ipa` before publishing it (decision
+0020). The app's screen has a Run button per program and prints the run's facts.
+
+**Unverified on device.** Nothing in this repository has been executed on a physical iPad. The first
+line worth reading when it is, is the probe's `rx_mapping=`: it is the device's answer to whether an app
+may execute pages it wrote, and it decides how much of Phase 5 is possible.
 
 `probe` prints the host page size, whether executable memory is available, and the size of the host's
 reserved low region. `run` prints one fact per line — including `image_placement=`, `bias=` and how
