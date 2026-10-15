@@ -313,7 +313,7 @@ final class GuestRunner {
             exitStatus: status,
             syscallCount: dispatcher.trace.total,
             patchedSites: plan.patchedCount,
-            placement: placementName,
+            placement: mapping.mechanism,
             bias: bias,
             relativeRelocations: relativeRelocations,
             faultSignal: up_last_fault_signal(),
