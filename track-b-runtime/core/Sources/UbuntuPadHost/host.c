@@ -17,6 +17,7 @@
 #include <errno.h>
 #include <mach-o/dyld.h>
 #include <mach-o/loader.h>
+#include <TargetConditionals.h>
 #include <mach/arm/thread_status.h>
 #include <mach/mach.h>
 #include <os/proc.h>
@@ -63,12 +64,19 @@ uint64_t up_total_memory(void) {
 
 /*
  * The app's remaining memory budget. On iOS this is jetsam's limit, which is the real ceiling for every
- * guest process this runtime will ever host; on macOS the call answers 0 for an unlimited process, and
- * the caller reports that as "unknown" rather than as an exhausted budget.
+ * guest process this runtime will ever host.
+ *
+ * The SDK marks `os_proc_available_memory()` **unavailable on macOS** (measured: the macOS 15 SDK
+ * refuses to compile the call), which fits: a macOS process is not under a jetsam-style limit. So the
+ * answer there is 0 — "this host will not say" — and the caller prints `unknown` in the report rather
+ * than a number it made up.
  */
 uint64_t up_available_memory(void) {
-    size_t available = os_proc_available_memory();
-    return (uint64_t)available;
+#if TARGET_OS_IPHONE
+    return (uint64_t)os_proc_available_memory();
+#else
+    return 0;
+#endif
 }
 
 static int g_mapping_errno = 0;

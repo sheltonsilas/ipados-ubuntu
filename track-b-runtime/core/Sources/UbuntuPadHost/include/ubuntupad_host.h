@@ -59,6 +59,9 @@ uint64_t up_total_memory(void);
  * Track B's whole guest tree lives inside one app, so the app's limit *is* the system's memory budget.
  * Apple documents `os_proc_available_memory()` as the way to ask for it and explicitly refuses to
  * promise a number, which is exactly why the runtime reports the answer instead of assuming one.
+ *
+ * iOS only: the macOS SDK marks that function unavailable (it compiles nowhere else), so on any other
+ * host this reports 0 and the caller says "unknown" rather than inventing a number.
  */
 uint64_t up_available_memory(void);
 
