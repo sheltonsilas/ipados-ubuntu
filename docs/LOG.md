@@ -5,6 +5,95 @@ what was done, what was learned, what was left unfinished.
 
 ---
 
+## 2026-10-15 — Session 3: the low 4 GiB is a kernel rule, so guest images are placed and relocated
+
+**Done**
+
+- Found *why* the end-to-end run was dying: XNU's Mach-O loader requires a 4 GiB `__PAGEZERO` on arm64,
+  so the low 4 GiB cannot be mapped at all. Both mechanisms from decision 0015 were removed — the
+  `-pagezero_size` link flag (which links, then produces a binary the kernel SIGKILLs at startup) and the
+  `MAP_FIXED` fallback (`up_reserve` now has one mode, a hint that must be honoured).
+- Added `UbuntuPadCore.ImagePlacement` (identity vs bias vs refusal, with the reasoning in the refusal
+  message) and `UbuntuPadCore.Relocations` (parse `PT_DYNAMIC`, apply `R_AARCH64_RELATIVE`, refuse
+  symbol-based and `.bss` relocations rather than half-applying them). Both are pure and portable, so
+  every branch is unit-tested on Linux: 12 new tests, including one that parses and applies a real
+  `-static-pie` binary's relocations.
+- Rebuilt the guest programs as `-static-pie`. `hello-pie-nostdlib.c` prints through a `volatile` global
+  pointer precisely so that the relocation pass has real work to do, and `tools/assert-guest-run.sh`
+  asserts the trio that cannot all pass by accident: the relocated guest prints its message, the same
+  guest with `--skip-relocations` does not (it faults, exit 11), and the fixed-address build is refused
+  with a reason. The workflow fails the build if `readelf` ever stops finding that relocation, so the
+  test cannot quietly become vacuous.
+- **First green Phase 2 end-to-end run**: `runtime-e2e` 38745174715 on commit `25eb56e` (with `tests`
+  38745174521 and `build-ipa` 38745174900). The guest printed its message byte for byte at a 448 GiB
+  bias, with one relative relocation applied, and the stack probe saw `pagesz=4096` and a biased
+  `AT_ENTRY`.
+- Track A: pushed the resumable, verified GStreamer pre-fetch (fork run 38746321359) after the previous
+  attempt died mid-download.
+
+**Learned**
+
+- A platform rule is worth more than a workaround. Shrinking `__PAGEZERO` at link time *builds*
+  successfully and then fails only at exec time, silently (`Killed: 9`, exit 137) — the kind of
+  "unrelated" failure that would have consumed a whole session had it not been measured against a
+  controlled binary.
+- **A hint is not a reservation.** On `macos-15` a hint at 8 GiB was refused, twelve candidates between
+  64 GiB and 240 GiB were refused, and 448 GiB was accepted — that is where XNU puts hinted mappings.
+  The runtime now adapts: it walks a candidate list from the planner and also converts the address a
+  refused hint returns into a candidate through the same alignment rule. The first green run was placed
+  by the *adaptive* candidate (attempt 13), so the fallback is not theoretical.
+- Two CI checks caught their own author: `readelf -r` truncates `R_AARCH64_RELATIVE` to
+  `R_AARCH64_RELATIV` (its narrow output) so a real relocation looked like a missing one, and the
+  real-binary patch test asserted every site was `svc #0` when a `-static -O0` guest contains one
+  `svc`-shaped word with a non-zero immediate. Both were fixed by asserting the real invariant.
+- `runtime-e2e` reports `rx_mapping=ok` **unsigned**: on the runner the write-then-execute strategy needs
+  no JIT entitlement. On the iPad that is still unverified.
+- `gstreamer.freedesktop.org` is still unhealthy from a third network (503 on a plain `HEAD`), so Track
+  A's blocker is the host, not the runner. Truncated transfers (curl 18) are resumable, which is now
+  what the pre-fetch does.
+
+**Unfinished / next**
+
+- Phase 1 still has no IPA: fork run 38746321359 was dispatched and is the thing to read next.
+- The runtime is not wired into the iOS app; no device test of anything.
+- `fork`/`clone`/`execve`, threads, signals, guest TLS and a filesystem remain Phase 3-4 work, and a real
+  Ubuntu binary is dynamically linked, which is Phase 4.
+
+---
+
+## 2026-10-15 — Session 2: Track A's CI definition and Track B's runtime, from skeleton to executing guest
+
+**Done**
+
+- Track A: forked UTM to `sheltonsilas/UTM`, kept the iOS-only workflow definition in this repository
+  (`track-a-utm/ci/ubuntupad-ios.yml`) and added `track-a-utm/tools/push-fork-ci.sh` to push and dispatch
+  it, so the fork's CI matches this repository exactly (decision 0017). Vendoring or running upstream's
+  nine-platform matrix were both rejected.
+- Track B: built the Phase 2 runtime end to end — ELF parsing and the `svc` → `brk` patch planner, the
+  guest address-space model (4 KiB guest pages over 16 KiB host pages, with protected-page merging), the
+  Linux initial stack, the syscall table and dispatcher, the C shim with the SIGTRAP handler and the
+  guest entry trampoline, and `ubuntupad-run` as the signed-able test bed (decisions 0011-0018).
+- CI: `tests.yml` grew a cross-compile step and real-binary test variables; `runtime-e2e.yml` was added
+  to run a cross-compiled Linux guest on `macos-15` and assert its stdout; `tools/assert-guest-run.sh`
+  asserts on stdout *between the runner's markers* because a passing exit code proves nothing.
+
+**Learned**
+
+- A test bundle cannot be signed with JIT entitlements, which is why the guest runner is an executable
+  target rather than an XCTest bundle (decision 0016).
+- The end-to-end job is the only place the platform's real properties (16 KiB pages, executable-memory
+  policy, address-space layout) are exercised; unit tests on Linux cover the *policy* instead.
+- Runner images move: the `ubuntu-latest` label announced a migration to Ubuntu 26 on 2026-10-19, so both
+  jobs were pinned to `ubuntu-24.04` (decision 0009).
+
+**Unfinished / next**
+
+- Track A's first builds died on `gstreamer.freedesktop.org` (curl 92, then HTTP 503), not on UTM's code.
+- The guest runner's first real execution attempt failed at the mapping step, which is what session 3
+  diagnosed.
+
+---
+
 ## 2026-10-14 — Session 1: foundation (Phase 0)
 
 **Done**

@@ -1,67 +1,77 @@
 # Status
 
-_Last updated: 2026-10-14 (Phase 0, session 1)._
+_Last updated: 2026-10-15 (Phase 2's exit criterion met in CI; Phase 1 in progress)._
 
 ## One-line summary
 
-**Phase 0 is complete.** The whole delivery pipeline is proven: CI builds an unsigned IPA on a
-macos-15 runner, verifies its structure, publishes it to a public release, and the core test suite
-passes on ubuntu-latest. There is **no Linux runtime in the app yet** — it opens a diagnostics
-screen. Nothing has been run on a real iPad, so every on-device claim is unverified.
+**Phase 2's exit criterion is met in CI:** a static AArch64 **Linux** program is cross-compiled, executed
+**natively on an Apple-silicon runner**, and the guest's own stdout is asserted byte for byte — with a
+control run that proves the relocation pass is load-bearing and a refusal test for an image that cannot
+be mapped on this platform at all. **Phase 1 is in progress:** the fork's iOS build runs, but has not yet
+produced a downloadable IPA — its last two attempts died on `gstreamer.freedesktop.org` (curl 92, then
+curl 18 / HTTP 503), and the resumable pre-fetch fix is dispatched as run
+[38746321359](https://github.com/sheltonsilas/UTM/actions/runs/38746321359). **Nothing has run on a real
+iPad**: every iOS result is *unverified on device*.
 
-## Verified evidence (2026-10-14, commit `8feff5c`)
+## Phase 2 evidence (commit `25eb56e`, all three workflows green)
 
 | Item | State | Evidence |
 | --- | --- | --- |
-| Public repository | Works | <https://github.com/sheltonsilas/ipados-ubuntu> |
-| Agent authentication (git push + API) | Works | `gh auth status` → logged in as `sheltonsilas`, token in the OS keyring |
-| Core unit tests on Linux | **Passing** | `tests.yml` run 38598756785, success on `8feff5c` |
-| Unsigned IPA built by CI | **Passing** | `build-ipa.yml` run 38598756914, success on `8feff5c` |
-| IPA structure verified in CI | **Passing** | `tools/verify-ipa.sh`: arm64 slice present, unsigned, no provisioning profile, no secrets, bundle 328 KB |
-| Rolling `nightly` release with a downloadable IPA | Works | <https://github.com/sheltonsilas/ipados-ubuntu/releases/tag/nightly> — `UbuntuPad-unsigned.ipa` (81,780 bytes) + `.sha256` |
-| Tagged milestone release (`v*` tags) | Works | `v0.1.0` published as Latest from tag push, with the same two assets; the asset downloaded from its public URL matched its published SHA-256 (`4eacbe00…5fd1`) |
-| Final commit `a88fe65` (branch push **and** tag push) | **All four runs green** | `tests` 38603118590/38603123020 and `build-ipa` 38603118447/38603122806 |
-| Release asset integrity | Verified independently | Downloaded from the public URL, SHA-256 matched the published value exactly (`290b1e68…6a51`), archive contains `Payload/UbuntuPad.app/UbuntuPad` (arm64) |
-| ELF64/AArch64 parsing | Passing (synthetic + real binary) | 8 tests in `ELFTests`, including a real `-static` aarch64 binary cross-compiled in CI |
-| Syscall table consistency | Passing | 4 tests in `SyscallTableTests` |
-| Diagnostics report model | Passing | 3 tests in `DiagnosticsTests` |
-| iOS app launches and shows diagnostics | **Unverified on device** | Built in CI only; never run on an iPad |
-| Track A (UTM fork) | Not started | Phase 1 |
-| Track B (native arm64 syscall runtime) | Skeleton only | Phases 2-5 |
+| `tests` (unit tests + layout + hygiene) | **Passing** | run [38745174521](https://github.com/sheltonsilas/ipados-ubuntu/actions/runs/38745174521) |
+| `runtime-e2e` (execute a Linux guest on Apple silicon) | **Passing** | run [38745174715](https://github.com/sheltonsilas/ipados-ubuntu/actions/runs/38745174715) — "all guest-run assertions passed" |
+| `build-ipa` (Phase 0 pipeline still green) | **Passing** | run [38745174900](https://github.com/sheltonsilas/ipados-ubuntu/actions/runs/38745174900) |
+| Guest's stdout, produced by guest code on the guest's stack | Verified | `hello from a position-independent aarch64 linux`, between the runner's markers, `exit=normal status=0` |
+| Image placement on a 16 KiB host | Verified | `reserved_low_region_bytes=4294967296`, `image_placement=biased requested_bias=0x7000000000`, `image_mapping=biased attempt=1 bias=0x7000000000` |
+| Relative relocations applied for that base | Verified | `relative_relocations=1 applied=1`; the same guest run with `--skip-relocations` faults (`exit=fault status=11`) and prints nothing, so the pass is what makes it work |
+| A fixed-address (ET_EXEC) image is refused, with a reason | Verified | `this is a fixed-address (ET_EXEC) executable linked at 0x400000, which is inside the 4 GiB … A position-independent build … can be loaded at a bias instead` |
+| Linux initial stack seen by the guest | Verified | `argc=3 argv0=…/stack-probe-nostdlib envp_entries=4 pagesz=4096 phnum=7 auxv_entries=18 entry=0x7000000558` (the entry carries the bias) |
+| Executable memory **without** JIT entitlements | Works on the runner | `probe` reports `rx_mapping=ok` unsigned, so the write-then-execute strategy needs no entitlement there; **unverified on device** |
+| Syscall capture (rewrite `svc` to `brk`, handle SIGTRAP) | Verified | `patched_syscall_sites=2` on both freestanding guests, and each guest's syscalls were serviced by Swift |
+| Relocation/placement unit coverage, including a real PIE binary | Passing | `ImagePlacementTests`, `RelocationTests` (the latter parses and applies a real `-static-pie` binary's `.rela.dyn`) |
 
-Known CI limitation: the real-binary ELF test reports **skipped** when `UBUNTUPAD_TEST_BINARY` is
-unset (local runs without a cross-compiler). In CI the workflow compiles the binary first, so the
-test runs; check the test output rather than only the exit code.
+Known limitation of the evidence: the guest is a **freestanding** program (no libc) — a real Ubuntu
+binary is dynamically linked, which is Phase 4 work, not proof this is not.
+
+## Phase 1 evidence
+
+| Item | State | Evidence |
+| --- | --- | --- |
+| UTM fork + CI definition owned by this repository | Works | `sheltonsilas/UTM@ubuntupad-ci`, pushed by `track-a-utm/tools/push-fork-ci.sh` (decision 0017) |
+| Fork's iOS build produces an unsigned IPA | **Not yet** | runs 38732453357 and 38735794962 both failed on the *same third-party host* (`gstreamer.freedesktop.org`): first curl 92, then curl 18 (truncated transfer) after five retries. Fix dispatched: [38746321359](https://github.com/sheltonsilas/UTM/actions/runs/38746321359) |
+| Preconfigured Ubuntu arm64 guest preset | Not started | Phase 1 |
+| Boot time on a real iPad | Not measured | needs the owner |
 
 ## What is broken / not started
 
-- No UTM fork in `track-a-utm/` yet, so there is no usable Linux desktop at all.
-- No real-device testing of any kind: everything iOS-side is **unverified on device**.
-- JIT is not implemented and is not even probed; `JITStatus` is deliberately `notProbed`.
-- The app has no VM, no guest image download, no terminal, no graphics.
-- The credential is wider than ideal (see below).
+- **Phase 1 has no usable app yet**: no IPA, no guest image, no VM configuration.
+- The Phase 2 runtime is **not wired into the iOS app**: the app still opens a diagnostics screen only.
+- No real-device testing of any kind.
+- Phase 2's leftovers: `fork`/`clone`/`execve`, threads and signals, guest TLS, a filesystem.
+- The iOS shell has no terminal and no way to feed the runtime a binary.
 
 ## CI environment risks to watch
 
-- The tests workflow is **pinned to `ubuntu-24.04`** because the `ubuntu-latest` label migrates to
-  Ubuntu 26 on 2026-10-19 and the Swift toolchain on a new image is not something we want to
-  inherit silently (decision 0009). If a pin retires, change it deliberately and re-run.
-- A GitHub-runner warning on the first runs said the `ubuntu-latest` label would migrate; the
-  workflow prints `swift --version` and fails loudly if no toolchain is present, so a surprise
-  shows up as an attributed error rather than a mysterious test failure.
+- `tests` and the cross-compile job are **pinned to `ubuntu-24.04`** because the `ubuntu-latest` label
+  migrates to Ubuntu 26 on 2026-10-19 (decision 0009). The end-to-end job is pinned to `macos-15` for the
+  same reason (decision 0013): a 16 KiB-page arm64 host is the design's premise.
+- `gstreamer.freedesktop.org` is a single point of failure for Track A (decision 0014). It has been
+  intermittently 503 for hours at a time; the fork's build cannot proceed without those three tarballs.
+- A macOS runner's **address-space layout is a moving target**: the first green run needed the adaptive
+  candidate because twelve planned biases were refused (decision 0019). The runtime reports every
+  attempt, so a future layout change shows up as a readable log line instead of a mysterious refusal.
 
-## Environment facts (agent machine, 2026-10-14)
+## Environment facts (agent machine, 2026-10-15)
 
-- Windows 11 + Git Bash tools; `git` and `gh` work, and a browser is available for GitHub web work.
-- No local `xcodebuild` / `swift`: iOS and Swift results are verified **only in CI**.
+- Windows 11 + Git Bash; `git`, `gh`, `curl`, `python3` (with `pyyaml`) work.
+- **No local `swift`, `xcodebuild` or `aarch64-linux-gnu-gcc`**: Swift compilation, the iOS build and
+  every guest-execution result are verified **only in CI**. Workflow YAML and shell scripts can be
+  syntax-checked locally (`bash -n`, `yaml.safe_load`), and that is done before every push.
 - The owner is signed in to GitHub in the agent browser as `sheltonsilas`.
-- Git checks out files with CRLF locally while storing LF, which is why `.gitattributes` pins
-  `eol=lf` for text files — a CRLF shell script would fail on the Linux runners.
 
 ## Credentials
 
-- **Authentication in use:** the GitHub CLI OAuth token in the operating system credential store.
-  It is never written to this repository, to CI, or to a log.
+- **Authentication in use:** the GitHub CLI OAuth token in the operating system credential store. It is
+  never written to this repository, to CI, or to a log.
 - **Scopes:** `repo`, `workflow`, `read:org`, `gist` — wider than the "public repo only" ideal
   (decision 0002 explains why and how to tighten it).
 - **Expiry:** none; valid until revoked. Renewal: [docs/SETUP.md](SETUP.md#agent-credentials).
@@ -70,11 +80,14 @@ test runs; check the test output rather than only the exit code.
 
 ## Next tasks (in order)
 
-1. **Phase 1 start:** fork UTM into the owner's account, vendor it under `track-a-utm/`, record the
-   upstream commit, and get its iOS target building as an unsigned IPA in CI.
-2. Define the preconfigured Ubuntu arm64 guest (XFCE/LXQt preset, first-run download URL + checksum).
-3. Investigate a pre-booted snapshot so the first launch takes seconds, not minutes.
-4. **Phase 2 start:** add `PT_LOAD` mapping to the ELF loader with tests, then the minimal syscall
-   dispatch (`write`, `exit`, `mmap`, `brk`, `read`) and run `testdata/hello.c` through it on Linux.
-5. Give the owner the on-device checklist (install, enable JIT, screenshot diagnostics) and label
-   every unverified item honestly until they report back.
+1. **Phase 1:** watch fork run 38746321359. If `gstreamer.freedesktop.org` is still refusing, decide
+   between (a) caching the three tarballs as a release asset in this repository and pointing the workflow
+   at it, (b) building the sysroot without GStreamer if the iOS target can link without it, or (c)
+   waiting — and record the choice in DECISIONS.md. The IPA is the gate for everything the owner can see.
+2. **Wire the runtime into the iOS shell**: bundle a PIE guest binary, keep the diagnostics screen, and
+   add a button that runs it through `UbuntuPadCore`/`UbuntuPadHost` on the device. This is the first
+   *device-visible* Phase 2 result and the first real test of the entitlement story.
+3. **Phase 3 start:** a static busybox, then a shell script with pipes and redirection (the phase's exit
+   criterion). Decide `fork`/`clone` strategy first, since pipes need it.
+4. Give the owner the on-device checklist (install, enable JIT, screenshot diagnostics) and keep every
+   unverified item labelled honestly until they report back.

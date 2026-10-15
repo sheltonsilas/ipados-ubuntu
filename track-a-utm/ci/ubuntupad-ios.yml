@@ -77,36 +77,62 @@ jobs:
           pip3 install --break-system-packages --user six pyparsing pyyaml setuptools distlib mako
           rm -f /usr/local/lib/pkgconfig/*.pc
 
-      # gstreamer.freedesktop.org is the one host this build cannot rely on from a GitHub runner: it
-      # closes HTTP/2 streams mid-download (curl error 92) and has answered 503 to the runners
-      # repeatedly. Two fixes, both recorded in docs/DECISIONS.md as decision 0014:
+      # gstreamer.freedesktop.org is the one host this build cannot rely on from a GitHub runner. Its
+      # three symptoms, all seen in this project's own logs: it closes HTTP/2 streams mid-download
+      # (curl error 92), it answers 503 for minutes at a time, and it closes an HTTP/1.1 connection a
+      # couple of megabytes early (curl error 18, "transfer closed with N bytes remaining"). Measured
+      # from a third network on 2026-10-15: still 503, so this is the host, not the runner.
+      #
+      # Two defences, both recorded in docs/DECISIONS.md as decision 0014:
       #   1. a curlrc that forces HTTP/1.1 and is far more patient than the build script's five
       #      attempts (curl retries 5xx itself, so the window for a transient outage is minutes);
-      #   2. pre-fetching the three GStreamer tarballs into the directory UTM's downloader checks, so
-      #      a file that is already there is never re-fetched. GStreamer is genuinely part of the iOS
-      #      sysroot (SPICE server), so skipping it is not an option.
+      #   2. pre-fetching the three GStreamer tarballs into the directory UTM's downloader checks, so a
+      #      file that is already there is never re-fetched. A truncated transfer is *resumed* rather
+      #      than restarted (`-C -`), which is exactly the failure mode: error 18 means the bytes that
+      #      did arrive are on disk and only the tail is missing.
+      # GStreamer is genuinely part of the iOS sysroot (SPICE server), so skipping it is not an option.
       - name: Make the source downloads able to survive a flaky host
         run: |
           set -euo pipefail
-          printf 'http1.1\nretry = 10\nretry-delay = 15\nretry-max-time = 900\n' > "$HOME/.curlrc"
+          printf 'http1.1\nretry = 12\nretry-delay = 10\nretry-max-time = 900\nretry-all-errors\n' > "$HOME/.curlrc"
           cat "$HOME/.curlrc"
+
+          # One download, verified: retried in place (resuming what already arrived), and re-fetched
+          # from scratch if the server ignored the Range header or the result is not a readable archive.
+          fetch() {
+            local url="$1" directory="$2" file="$3" attempt
+            for attempt in 1 2 3; do
+              echo "attempt $attempt: $url"
+              if ! curl -fL --http1.1 -C - --retry 12 --retry-delay 10 --retry-max-time 900 \
+                   --retry-all-errors -o "$directory/$file" "$url"; then
+                # Error 33 (no byte-range support) leaves a file we cannot resume from.
+                rm -f "$directory/$file"
+                curl -fL --http1.1 --retry 12 --retry-delay 10 --retry-max-time 900 \
+                  --retry-all-errors -o "$directory/$file" "$url" || continue
+              fi
+              if tar -tf "$directory/$file" >/dev/null 2>&1; then
+                shasum -a 256 "$directory/$file"
+                return 0
+              fi
+              echo "::warning:$file is not a readable archive yet; starting over"
+              rm -f "$directory/$file"
+            done
+            return 1
+          }
 
           # UTM's build directory name: build-<platform family>-<arch>, and "ios" is family "iOS".
           build_dir="build-iOS-arm64"
           mkdir -p "$build_dir"
-          for url in \
-            https://gstreamer.freedesktop.org/src/gstreamer/gstreamer-1.19.1.tar.xz \
-            https://gstreamer.freedesktop.org/src/gst-plugins-base/gst-plugins-base-1.19.1.tar.xz \
-            https://gstreamer.freedesktop.org/src/gst-plugins-good/gst-plugins-good-1.19.1.tar.xz ; do
-            file="$(basename "$url")"
-            if [ -s "$build_dir/$file" ]; then
-              echo "$file is already present"
+          pre_fetched=0
+          for module in gstreamer gst-plugins-base gst-plugins-good; do
+            file="$module-1.19.1.tar.xz"
+            if [ -s "$build_dir/$file" ] && tar -tf "$build_dir/$file" >/dev/null 2>&1; then
+              echo "$file is already present and readable"
+              pre_fetched=$((pre_fetched + 1))
               continue
             fi
-            echo "fetching $file"
-            if curl -fL --http1.1 --retry 10 --retry-delay 15 --retry-max-time 900 \
-                 -o "$build_dir/$file" "$url" && tar -tf "$build_dir/$file" >/dev/null 2>&1; then
-              shasum -a 256 "$build_dir/$file"
+            if fetch "https://gstreamer.freedesktop.org/src/$module/$file" "$build_dir" "$file"; then
+              pre_fetched=$((pre_fetched + 1))
             else
               # Not fatal on its own: the dependency build tries again with the same patience, and its
               # error message is the one that should appear in the log if the host is really down.
@@ -114,6 +140,7 @@ jobs:
               rm -f "$build_dir/$file"
             fi
           done
+          echo "pre-fetched $pre_fetched of 3 GStreamer tarballs"
 
       - name: Build dependencies
         if: steps.cache-sysroot.outputs.cache-matched-key == ''
