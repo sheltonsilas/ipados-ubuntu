@@ -44,21 +44,29 @@ jobs:
         working-directory: track-b-runtime/core
         run: swift test
 
-      - name: Cross-compile a real arm64 Ubuntu binary for the loader test
+      - name: Cross-compile real arm64 Ubuntu binaries for the loader tests
         run: |
           set -euo pipefail
           sudo apt-get update -qq
           sudo apt-get install -y -qq gcc-aarch64-linux-gnu
           mkdir -p build
+          # A libc-linked static program: the "real Ubuntu binary" for the ELF parser and patch planner.
           aarch64-linux-gnu-gcc -static -O0 -o build/hello-arm64 track-b-runtime/testdata/hello.c
-          file build/hello-arm64
-          ls -l build/hello-arm64
+          # Freestanding programs: no libc, every syscall written out by hand, exactly two svc sites
+          # each. These are the images the end-to-end run executes (runtime-e2e.yml).
+          common="-static -nostdlib -no-pie -ffreestanding -fno-builtin -O1"
+          aarch64-linux-gnu-gcc $common -o build/hello-nostdlib track-b-runtime/testdata/hello-nostdlib.c
+          aarch64-linux-gnu-gcc $common -o build/stack-probe-nostdlib track-b-runtime/testdata/stack-probe-nostdlib.c
+          file build/*
+          ls -l build
 
-      - name: Loader parses a real static arm64 ELF
+      - name: Loader, patch planner and stack builder against real arm64 binaries
         working-directory: track-b-runtime/core
         env:
           UBUNTUPAD_TEST_BINARY: ${{ github.workspace }}/build/hello-arm64
-        run: swift test --filter ELFTests
+          UBUNTUPAD_TEST_NOSTDLIB_BINARY: ${{ github.workspace }}/build/hello-nostdlib
+        # No --filter: every test that needs a real binary must run, not just the ELF ones.
+        run: swift test
 
   layout:
     name: Repository layout and hygiene (ubuntu-24.04)

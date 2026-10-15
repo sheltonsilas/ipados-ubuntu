@@ -41,6 +41,7 @@ public enum SyscallNumber {
     public static let exit: Int32 = 93
     public static let exitGroup: Int32 = 94
     public static let setTidAddress: Int32 = 96
+    public static let setRobustList: Int32 = 99
     public static let futex: Int32 = 98
     public static let nanosleep: Int32 = 101
     public static let clockGetTime: Int32 = 113
@@ -131,6 +132,7 @@ public struct SyscallTable {
         SyscallEntry(number: SyscallNumber.exit, name: "exit"),
         SyscallEntry(number: SyscallNumber.exitGroup, name: "exit_group"),
         SyscallEntry(number: SyscallNumber.setTidAddress, name: "set_tid_address"),
+        SyscallEntry(number: SyscallNumber.setRobustList, name: "set_robust_list"),
         SyscallEntry(number: SyscallNumber.futex, name: "futex"),
         SyscallEntry(number: SyscallNumber.nanosleep, name: "nanosleep"),
         SyscallEntry(number: SyscallNumber.clockGetTime, name: "clock_gettime"),

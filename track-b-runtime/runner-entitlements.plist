@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Entitlements for the Track B guest runner, used ONLY as a fallback.
+
+  The runtime is designed not to need these: guest text is written while the mapping is writable and
+  only afterwards made executable, so the process never asks the kernel for a page that is both
+  writable and executable. On Apple silicon that is the difference between "works on any machine" and
+  "needs an entitlement", and the runtime's `probe` mode reports which one happened.
+
+  If `probe` reports `rx_mapping=failed` on a runner, the workflow re-signs the binary with these
+  entitlements and records that in the job output, so the fallback is never silent:
+
+    com.apple.security.cs.allow-jit                     MAP_JIT for a hardened process
+    com.apple.security.cs.allow-unsigned-executable-memory  broader W+X exception
+    com.apple.security.cs.disable-library-validation    so an ad-hoc signature still loads Swift's dylibs
+
+  None of this is an Apple-issued credential: it is an ad-hoc signature (`codesign -s -`). See
+  docs/RESEARCH/jit-and-entitlements-on-ios.md for the iOS side of the same question.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+</dict>
+</plist>

@@ -1,0 +1,176 @@
+name: runtime-e2e
+
+# Track B's end-to-end proof: build a static AArch64 *Linux* program, then actually execute it on an
+# Apple-silicon runner and assert the bytes that come out.
+#
+# Why a macOS runner for a Linux guest: the same architecture, the same 16 KiB pages and the same
+# code-signing rules as the iPad. A guest that runs here exercises the real design; running it on a
+# Linux x86_64 runner would exercise an emulator instead. The guest binaries are cross-compiled on
+# Linux (cheap, and it keeps the cross-toolchain out of the macOS job) and passed over as artifacts.
+#
+# Nothing here is a simulation: if the guest's message does not come out byte for byte, this fails.
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: runtime-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  guest-binaries:
+    name: Cross-compile the guest programs (ubuntu-24.04)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the aarch64 cross toolchain
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gcc-aarch64-linux-gnu
+          aarch64-linux-gnu-gcc --version | head -n1
+
+      - name: Build the guest programs
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          # -nostdlib: no libc, so every syscall is written out by hand and nothing hides a mistake.
+          # -no-pie: a fixed-address ET_EXEC image, which is what lets the loader map it at its own
+          #          virtual addresses (Phase 2 has no relocation pass yet).
+          common="-static -nostdlib -no-pie -ffreestanding -fno-builtin -O1"
+          aarch64-linux-gnu-gcc $common -o build/hello-nostdlib track-b-runtime/testdata/hello-nostdlib.c
+          aarch64-linux-gnu-gcc $common -o build/stack-probe-nostdlib track-b-runtime/testdata/stack-probe-nostdlib.c
+          # The libc-linked program the ELF parser and patch planner are tested against.
+          aarch64-linux-gnu-gcc -static -O0 -o build/hello-arm64 track-b-runtime/testdata/hello.c
+          file build/*
+          ls -l build
+          sha256sum build/*
+
+      - name: Confirm the freestanding programs have no interpreter and no libc
+        run: |
+          set -euo pipefail
+          for binary in build/hello-nostdlib build/stack-probe-nostdlib; do
+            if readelf -l "$binary" | grep -q INTERP; then
+              echo "::error::$binary unexpectedly has a PT_INTERP segment"
+              exit 1
+            fi
+            if readelf -h "$binary" | grep -q 'DYN'; then
+              echo "::error::$binary is ET_DYN; the Phase 2 loader maps images at their own addresses"
+              exit 1
+            fi
+            # Exactly two syscall instructions: write, then exit_group. Any more (or fewer) means the
+            # runtime's patching expectations in CodePatchTests no longer describe this program.
+            count=$(aarch64-linux-gnu-objdump -d "$binary" | grep -cE '[[:space:]]d4000001[[:space:]]' || true)
+            echo "$binary has $count svc #0 instructions"
+            if [ "$count" -ne 2 ]; then
+              echo "::error::expected exactly 2 svc instructions in $binary, found $count"
+              exit 1
+            fi
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: guest-binaries
+          path: build/
+
+  apple-silicon:
+    name: Execute the guest on Apple silicon (macos-15)
+    needs: guest-binaries
+    # Pinned, not `macos-latest`: this test is about a 16 KiB-page aarch64 host, and both of those
+    # properties must not change silently (decision 0009 for Linux, 0013 for this job).
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: guest-binaries
+          path: build
+
+      - name: Report the host
+        run: |
+          set -euo pipefail
+          uname -a
+          uname -m
+          sysctl -n hw.pagesize hw.ncpu hw.memsize
+          swift --version
+          ls -l build
+          # The whole 16 KiB design assumption, stated where it is used.
+          [ "$(uname -m)" = "arm64" ] || { echo "::error::this job must run on an arm64 host"; exit 1; }
+
+      - name: Build the runner
+        working-directory: track-b-runtime/core
+        run: |
+          set -euo pipefail
+          swift build -c release --product ubuntupad-run
+          .build/release/ubuntupad-run --version
+
+      - name: Probe the host (before any signing)
+        working-directory: track-b-runtime/core
+        run: |
+          set -euo pipefail
+          .build/release/ubuntupad-run probe | tee "$GITHUB_WORKSPACE/probe-unsigned.txt"
+
+      - name: Re-sign with the JIT entitlements only if executable memory was refused
+        id: sign
+        working-directory: track-b-runtime/core
+        run: |
+          set -euo pipefail
+          if grep -q 'rx_mapping=ok' "$GITHUB_WORKSPACE/probe-unsigned.txt"; then
+            echo "Executable memory was available without entitlements; nothing to do."
+            echo "signed=no" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "::warning::the kernel refused an executable mapping; falling back to an ad-hoc signature with the JIT entitlements"
+          codesign --force --sign - --options runtime \
+            --entitlements "$GITHUB_WORKSPACE/track-b-runtime/runner-entitlements.plist" \
+            .build/release/ubuntupad-run
+          codesign -d --entitlements - .build/release/ubuntupad-run || true
+          .build/release/ubuntupad-run probe | tee "$GITHUB_WORKSPACE/probe-signed.txt"
+          grep -q 'rx_mapping=ok' "$GITHUB_WORKSPACE/probe-signed.txt" || {
+            echo "::error::even with the JIT entitlements, executable memory is unavailable; the design cannot work on this host"
+            exit 1
+          }
+          echo "signed=yes" >> "$GITHUB_OUTPUT"
+
+      - name: Record which path was taken
+        run: |
+          {
+            echo "## Phase 2 end-to-end run"
+            echo
+            echo "Entitlements were required: **${{ steps.sign.outputs.signed }}**"
+            echo
+            echo '```'
+            cat "$GITHUB_WORKSPACE/probe-unsigned.txt"
+            [ -f "$GITHUB_WORKSPACE/probe-signed.txt" ] && cat "$GITHUB_WORKSPACE/probe-signed.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Run the guests and assert their output
+        working-directory: track-b-runtime/core
+        run: |
+          set -euo pipefail
+          bash "$GITHUB_WORKSPACE/tools/assert-guest-run.sh" \
+            .build/release/ubuntupad-run \
+            "$GITHUB_WORKSPACE/build/hello-nostdlib" \
+            "$GITHUB_WORKSPACE/build/stack-probe-nostdlib"
+
+      - name: Upload the run logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: guest-run-logs
+          path: |
+            probe-unsigned.txt
+            probe-signed.txt
+          if-no-files-found: ignore

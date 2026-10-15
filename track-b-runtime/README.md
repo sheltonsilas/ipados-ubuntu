@@ -1,54 +1,94 @@
 # Track B — the native arm64 syscall-translation runtime
 
-**Status: Phase 0 skeleton.** The ELF header parser, the curated syscall table and the diagnostics
-model exist and are tested in CI. Nothing executes a Linux binary yet.
+**Status: Phase 2.** A static AArch64 **Linux** program is loaded, mapped at its own addresses,
+patched so every `svc #0` reaches our code, and executed **natively on an Apple-silicon host**, with
+the Linux syscalls serviced by our own Swift. What is not done: a dynamically linked program, more
+than one process, threads, signals and a filesystem.
 
 ## Layout
 
 ```
-core/                       SwiftPM package: platform-independent, builds and tests on Linux CI
-  Sources/UbuntuPadCore/
-    ELF.swift               ELF64/AArch64 header + program header parsing, PT_INTERP lookup
-    SyscallTable.swift      curated arm64 syscall numbers and lookup helpers
-    Diagnostics.swift       the report an owner pastes into a GitHub issue
-    Version.swift           version/phase constants (named BuildInfo, not the module name)
-  Tests/UbuntuPadCoreTests/ unit tests, including a real cross-compiled arm64 binary
-ios/                        the iOS shell (SwiftUI + XcodeGen spec)
-  project.yml               source of truth for the Xcode project (decision 0005)
-  UbuntuPad/                app sources; the only place Apple-only APIs may appear
-testdata/hello.c            the probe program: static arm64, used by tests and by Phase 2
+core/                          SwiftPM package: builds and tests on Linux AND macOS
+  Sources/UbuntuPadCore/       the platform-independent library (no Darwin, no Glibc — CI enforces it)
+    ELF.swift                  ELF64/AArch64 header + program header parsing, PT_INTERP
+    CodePatch.swift            finds every `svc` in executable segments and plans the patch
+    GuestAddressSpace.swift    4 KiB guest pages over 16 KiB host pages; regions; host-page plan
+    InitialStack.swift         the Linux process stack: argc/argv/envp/auxv, AT_PHDR, AT_PAGESZ
+    SyscallTable.swift         curated arm64 syscall numbers (the trace and tests keep it honest)
+    SyscallDispatch.swift      the syscall *policy*: registers, errno, outcomes, trace, dispatcher
+    Diagnostics.swift          the report an owner pastes into a GitHub issue
+  Sources/UbuntuPadHost/       the C shim: mmap primitives, the guest entry trampoline, the SIGTRAP
+                               handler (host.c). This is the only place machine-level code lives.
+  Sources/ubuntupad-run/       the executable that actually runs a guest (see below)
+  Tests/UbuntuPadCoreTests/    unit tests, including real cross-compiled arm64 binaries
+ios/                           the iOS shell (SwiftUI + XcodeGen spec) — not wired to the runtime yet
+testdata/                      the guest programs: freestanding (raw syscalls) and libc-linked
+runner-entitlements.plist      used ONLY if the kernel refuses an executable mapping (decision 0015)
 ```
 
-`core` must never import `Darwin`, `UIKit`, `SwiftUI`, `Metal`, `MachO` or friends — CI enforces
-this (decision 0006), because that is what lets us test syscall semantics on a free Linux runner.
+## The design in five steps
 
-## What Phase 2 adds, in order
+1. **Parse** the image; refuse anything that is not static ELF64/AArch64 at a fixed address.
+2. **Map** the image at exactly its link-time addresses. A guest virtual address *is* a host virtual
+   address, so the guest's pointers need no translation (decision 0011).
+3. **Patch**: every `svc #0` becomes `brk #0x123`, planned from the executable `PT_LOAD` contents.
+4. **Protect**: each host page gets the union of the protections of the guest regions inside it, and
+   the run reports how many pages had to merge (decision 0018).
+5. **Run**: install a SIGTRAP handler on its own stack and branch to the entry point. Each trap is a
+   syscall: the handler reads x8/x0-x5 out of the signal context, lets Swift decide, writes x0, steps
+   the program counter past the breakpoint and resumes the guest (decision 0012).
 
-1. **ELF loader**: map `PT_LOAD` segments into the guest address space from parsed program headers.
-   The parser already rejects non-AArch64, non-ELF64, truncated and misordered images, and CI checks
-   its offsets against a real `-static` aarch64 binary built with `gcc-aarch64-linux-gnu`.
-2. **Guest memory model**: 4 KiB guest pages on top of 16 KiB host pages, with a software page table
-   (see [syscall-translation prior art](../docs/RESEARCH/syscall-translation-prior-art.md)).
-3. **Syscall dispatch**: `write`, `exit`, `mmap`, `brk`, `read` first, then the table in
-   `SyscallTable.swift`, which CI keeps consistent.
-4. **Capture mechanism**: `svc` rewriting vs a patched libc vs interpretation — decision 0008 is
-   still *proposed* and must be resolved with measurements, not opinion.
-5. **A static arm64 "hello world" running in tests** on the ubuntu-latest runner, asserting stdout.
-   `testdata/hello.c` is that program.
+Two things this design deliberately avoids: generated code, and pages that are writable and
+executable at the same time. Text is written while it is writable and made executable afterwards. That
+is what keeps it viable on a non-jailbroken iOS device, and `ubuntupad-run probe` reports the kernel's
+answer rather than assuming it.
 
-## How to run the tests
+## How to run it
+
+```bash
+# 1. cross-compile the guest programs (Linux/macOS with the aarch64 toolchain, or use CI's artifact)
+aarch64-linux-gnu-gcc -static -nostdlib -no-pie -ffreestanding -fno-builtin -O1 \
+  -o /tmp/hello-nostdlib track-b-runtime/testdata/hello-nostdlib.c
+
+# 2. build and probe
+cd track-b-runtime/core
+swift build -c release --product ubuntupad-run
+.build/release/ubuntupad-run probe
+
+# 3. run a guest
+.build/release/ubuntupad-run run /tmp/hello-nostdlib
+```
+
+`probe` prints the host page size, whether executable memory is available, and the size of the host's
+reserved low region. `run` prints one fact per line and brackets the guest's own output with
+`guest-stdout-begin` / `guest-stdout-end`, which is what CI asserts
+(`tools/assert-guest-run.sh`). `run` is **only meaningful on arm64**; on other architectures it
+reports `exit=unsupported-on-this-host` and exits non-zero rather than pretending.
+
+The unit tests, including the checks against real binaries:
 
 ```bash
 cd track-b-runtime/core
-swift test                      # works on macOS and Linux
+swift test                     # on Linux or macOS
+UBUNTUPAD_TEST_BINARY=/path/to/static-libc-arm64-binary \
+UBUNTUPAD_TEST_NOSTDLIB_BINARY=/path/to/hello-nostdlib \
+swift test
 ```
 
-To also exercise the real-binary check locally, cross-compile the probe and point the test at it:
+Without those variables the real-binary tests report **skipped**, never passed — read the test output,
+not just the exit code. `runtime-e2e.yml` sets them and runs the whole thing on `macos-15`.
 
-```bash
-aarch64-linux-gnu-gcc -static -O0 -o /tmp/hello-arm64 track-b-runtime/testdata/hello.c
-UBUNTUPAD_TEST_BINARY=/tmp/hello-arm64 swift test --filter ELFTests
-```
+## What is not implemented (and is therefore refused, loudly)
 
-Without `UBUNTUPAD_TEST_BINARY` that one test reports **skipped**, never passed — check the test
-output, not just the exit code.
+| Missing | What happens today |
+| --- | --- |
+| Dynamic linking / `PT_INTERP` | the loader refuses the image and says which interpreter it asked for |
+| ET_DYN (PIE) images | refused; `loadBias` exists in the stack builder but nothing relocates yet |
+| `fork`/`clone`/`execve` | `ENOSYS`, recorded in the trace's `unimplemented=` line |
+| Threads, futexes, signals to the guest | `ENOSYS`; `rt_sigaction` is accepted as a no-op and documented as such |
+| Filesystem (`openat`, `fstat`, `ioctl`, ...) | `ENOSYS` / `ENOTTY`; only a virtual `/` exists for `getcwd` |
+| Guest TLS (`TPIDR_EL0`) | untouched: the guest's thread pointer is the host's, so a program that sets one (glibc does) is not supported yet |
+| Code the guest generates at runtime | not patched; the first dynamic `svc` becomes a Darwin syscall and the run ends with `exit=breakpoint` |
+
+The `unimplemented=` line in a run's output is the intended work list for the next session: run a
+program, see what it asks for, implement that.

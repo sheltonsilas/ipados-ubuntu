@@ -23,11 +23,18 @@ required_files=(
   docs/SETUP.md
   docs/RESEARCH/README.md
   track-a-utm/README.md
+  track-a-utm/ci/ubuntupad-ios.yml
+  track-a-utm/tools/push-fork-ci.sh
   track-b-runtime/README.md
   track-b-runtime/core/Package.swift
   track-b-runtime/ios/project.yml
+  track-b-runtime/runner-entitlements.plist
+  track-b-runtime/testdata/hello-nostdlib.c
+  track-b-runtime/testdata/stack-probe-nostdlib.c
+  tools/assert-guest-run.sh
   .github/workflows/build-ipa.yml
   .github/workflows/tests.yml
+  .github/workflows/runtime-e2e.yml
 )
 
 for file in "${required_files[@]}"; do
@@ -46,12 +53,22 @@ else
 fi
 
 # --------------------------------------------------------------------------- platform portability
-# Decision 0006: the core must stay free of Apple-only APIs so it keeps building on Linux CI.
-if grep -rnE '^import (Darwin|UIKit|SwiftUI|Metal|MetalKit|CoreGraphics|CoreFoundation|MachO|Security)' \
-  track-b-runtime/core/Sources >/dev/null 2>&1; then
-  bad "Apple-only import found in the platform-independent core:"
-  grep -rnE '^import (Darwin|UIKit|SwiftUI|Metal|MetalKit|CoreGraphics|CoreFoundation|MachO|Security)' \
-    track-b-runtime/core/Sources
+# Decision 0006: the *library* target must stay free of Apple-only APIs so it keeps building and
+# testing on Linux CI. The scope is deliberately the library and not all of Sources/: as of Phase 2
+# the package also contains `ubuntupad-run`, whose whole job is to call mmap and signal handlers on
+# Apple silicon, and which is guarded so it still compiles (and reports "unsupported") on Linux.
+library_sources=track-b-runtime/core/Sources/UbuntuPadCore
+if grep -rnE '^(import (Darwin|UIKit|SwiftUI|Metal|MetalKit|CoreGraphics|CoreFoundation|MachO|Security)|#if canImport\(Darwin\))' \
+  "$library_sources" >/dev/null 2>&1; then
+  bad "Apple-only API found in the platform-independent core library:"
+  grep -rnE '^(import (Darwin|UIKit|SwiftUI|Metal|MetalKit|CoreGraphics|CoreFoundation|MachO|Security)|#if canImport\(Darwin\))' \
+    "$library_sources"
+fi
+
+# The reverse check: the library must not need Foundation-only escapes from portability either.
+if grep -rnE '^import (Glibc|Android)' "$library_sources" >/dev/null 2>&1; then
+  bad "Linux-only import found in the platform-independent core library:"
+  grep -rnE '^import (Glibc|Android)' "$library_sources"
 fi
 
 # ------------------------------------------------------------------------------------- secret scan
