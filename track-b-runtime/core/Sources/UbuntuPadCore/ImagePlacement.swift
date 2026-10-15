@@ -94,7 +94,7 @@ public struct ImagePlacementPlanner {
         if reservedLowRegion == 0 {
             return image.header.elfType == .executable
                 ? .identity
-                : .biased(bias: biasPlacingLowest(lowest, atOrAbove: biasTarget, alignment: alignment))
+                : .biased(bias: bias(lowest: lowest, atOrAbove: biasTarget, alignment: alignment))
         }
 
         if image.header.elfType == .executable {
@@ -115,7 +115,7 @@ public struct ImagePlacementPlanner {
 
         // ET_DYN: any bias works as long as it keeps the image's alignment, so put it above the floor.
         return .biased(
-            bias: biasPlacingLowest(lowest, atOrAbove: max(biasTarget, reservedLowRegion), alignment: alignment))
+            bias: bias(lowest: lowest, atOrAbove: max(biasTarget, reservedLowRegion), alignment: alignment))
     }
 
     /// A bias that is a whole number of `alignment` steps **and** puts the image's lowest virtual
